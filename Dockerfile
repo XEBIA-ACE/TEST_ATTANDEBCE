@@ -1,51 +1,54 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1: Dependencies
-# Install ALL deps (including devDeps needed for potential build steps).
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── Stage 1: Install dependencies ───────────────────────────────────────────
 FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-# Copy manifests first to leverage layer caching
+# Copy dependency manifests only (for layer caching)
 COPY package*.json ./
 
-# Install production + dev deps so we can prune later
-RUN npm ci --frozen-lockfile
+# Install production dependencies only
+RUN npm ci --omit=dev
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: Production image
-# Copies only the production node_modules and source code.
-# ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS production
-
-# Install dumb-init for proper PID 1 signal handling
-RUN apk add --no-cache dumb-init
+# ─── Stage 2: Build / Prepare (no transpile step needed for plain JS) ─────────
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-ENV NODE_ENV=production
+COPY package*.json ./
+# Install all deps including dev for any future build steps
+RUN npm ci
 
-# Create a non-root user for security
-RUN addgroup -g 1001 -S nodejs && adduser -S appuser -u 1001 -G nodejs
+COPY . .
 
-# Copy production dependencies from deps stage
-COPY --from=deps --chown=appuser:nodejs /app/node_modules ./node_modules
+# ─── Stage 3: Production image ────────────────────────────────────────────────
+FROM node:20-alpine AS production
+
+# Install dumb-init for proper PID 1 handling and signal forwarding
+RUN apk add --no-cache dumb-init
+
+# Create a non-root user
+RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# Copy production node_modules from deps stage
+COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
 
 # Copy application source
-COPY --chown=appuser:nodejs src/ ./src/
-COPY --chown=appuser:nodejs package*.json ./
+COPY --chown=nodejs:nodejs . .
 
-# Create the logs directory and assign ownership
-RUN mkdir -p logs && chown appuser:nodejs logs
+# Remove dev-only files from the image
+RUN rm -f .env* && rm -rf tests/
 
-USER appuser
+# Switch to non-root user
+USER nodejs
 
 EXPOSE 3000
 
-# Health-check for orchestrators (Docker, Kubernetes)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/api/v1/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+ENV NODE_ENV=production
 
-# Use dumb-init to handle OS signals correctly
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "src/server.js"]
+CMD ["node", "server.js"]

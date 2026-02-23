@@ -1,79 +1,56 @@
-'use strict';
-
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-const swaggerUi = require('swagger-ui-express');
 
-const config = require('./config');
-const swaggerSpec = require('./config/swagger');
 const routes = require('./api/routes');
+const { errorHandler, notFoundHandler } = require('./api/middlewares/errorHandler');
 const requestLogger = require('./api/middlewares/requestLogger');
-const errorHandler = require('./api/middlewares/errorHandler');
-const { sendError } = require('./utils/response');
+const logger = require('./config/logger');
+const swaggerConfig = require('./config/swagger');
 
 const app = express();
 
-// ─── Security headers ──────────────────────────────────────────────────────────
+// ─── Security Middleware ──────────────────────────────────────────────────────
 app.use(helmet());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-app.use(
-  cors({
-    origin: config.cors.origin,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
-
-// ─── Compression ───────────────────────────────────────────────────────────────
+// ─── Request Parsing ──────────────────────────────────────────────────────────
 app.use(compression());
-
-// ─── Body parsing ──────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-// ─── Request logging ───────────────────────────────────────────────────────────
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many requests, please try again later.' },
+});
+app.use('/api/', limiter);
+
+// ─── Request Logging ──────────────────────────────────────────────────────────
 app.use(requestLogger);
 
-// ─── Rate limiting ─────────────────────────────────────────────────────────────
-app.use(
-  rateLimit({
-    windowMs: config.rateLimit.windowMs,
-    max: config.rateLimit.max,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { success: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests' } },
-  })
-);
+// ─── API Documentation ────────────────────────────────────────────────────────
+const { swaggerUi, swaggerSpec } = swaggerConfig;
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'Attendance Tracking API',
+}));
+app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
 
-// ─── API docs (non-production only) ────────────────────────────────────────────
-if (!config.isProd) {
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
-  app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
-}
+// ─── Application Routes ───────────────────────────────────────────────────────
+app.use('/api', routes);
 
-// ─── API routes ────────────────────────────────────────────────────────────────
-app.use(`/api/${config.server.apiVersion}`, routes);
-
-// ─── Root redirect ─────────────────────────────────────────────────────────────
-app.get('/', (req, res) =>
-  res.json({
-    service: 'Attendance Tracking Service',
-    version: config.server.apiVersion,
-    docs: config.isProd ? null : '/api-docs',
-    health: `/api/${config.server.apiVersion}/health`,
-  })
-);
-
-// ─── 404 handler ───────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  sendError(res, `Route ${req.method} ${req.path} not found`, 404, 'NOT_FOUND');
-});
-
-// ─── Global error handler (must be last) ───────────────────────────────────────
+// ─── Error Handling ───────────────────────────────────────────────────────────
+app.use(notFoundHandler);
 app.use(errorHandler);
 
 module.exports = app;

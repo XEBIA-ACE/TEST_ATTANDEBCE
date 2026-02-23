@@ -1,49 +1,43 @@
-'use strict';
-
 const jwt = require('jsonwebtoken');
-const config = require('../../config');
-const { UnauthorizedError, ForbiddenError } = require('../../utils/errors');
+const { AppError } = require('./errorHandler');
 
 /**
  * JWT authentication middleware.
- *
- * Reads the Bearer token from the Authorization header, verifies it, and
- * attaches the decoded payload to `req.user`.
- *
- * Usage:
- *   router.get('/protected', authenticate, handler)
- *   router.delete('/admin-only', authenticate, authorize(['admin']), handler)
+ * Validates the Bearer token from the Authorization header and
+ * attaches the decoded payload to req.user.
  */
-function authenticate(req, res, next) {
-  const authHeader = req.headers['authorization'];
+const authenticate = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return next(new UnauthorizedError('Missing or malformed Authorization header'));
+    return next(new AppError('Authentication required — provide a Bearer token', 401));
   }
 
-  const token = authHeader.slice(7);
+  const token = authHeader.split(' ')[1];
+
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded;
     return next();
   } catch (err) {
-    return next(err); // JsonWebTokenError / TokenExpiredError → handled by errorHandler
+    return next(err); // Caught by errorHandler (JsonWebTokenError / TokenExpiredError)
   }
-}
+};
 
 /**
- * Role-based authorisation middleware factory.
- * Must be used AFTER `authenticate`.
- *
- * @param {string[]} roles  - Allowed roles (e.g. ['admin', 'manager'])
+ * Role-based authorization middleware factory.
+ * Usage: authorize('admin') or authorize('admin', 'manager')
  */
-function authorize(roles = []) {
-  return (req, res, next) => {
-    if (!req.user) return next(new UnauthorizedError());
-    if (roles.length && !roles.includes(req.user.role)) {
-      return next(new ForbiddenError('You do not have permission to perform this action'));
-    }
-    return next();
-  };
-}
+const authorize = (...roles) => (req, res, next) => {
+  if (!req.user) {
+    return next(new AppError('Authentication required', 401));
+  }
+
+  if (!roles.includes(req.user.role)) {
+    return next(new AppError('Insufficient permissions for this action', 403));
+  }
+
+  return next();
+};
 
 module.exports = { authenticate, authorize };

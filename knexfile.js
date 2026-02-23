@@ -1,68 +1,54 @@
 require('dotenv').config();
 
 /**
- * Knex database configuration for multiple environments.
+ * Knex configuration for multiple environments.
  * Uses environment variables for all sensitive connection details.
  */
+const baseConfig = {
+  client: 'pg',
+  connection: {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT, 10) || 5432,
+    database: process.env.DB_NAME || 'attendance_db',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+  },
+  migrations: {
+    directory: './src/data/migrations',
+    tableName: 'knex_migrations',
+  },
+  seeds: {
+    directory: './src/data/seeds',
+  },
+  pool: {
+    min: parseInt(process.env.DB_POOL_MIN, 10) || 2,
+    max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
+  },
+};
+
 module.exports = {
   development: {
-    client: 'pg',
-    connection: {
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'attendance_db',
-      user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD || 'postgres',
-    },
-    pool: {
-      min: parseInt(process.env.DB_POOL_MIN) || 2,
-      max: parseInt(process.env.DB_POOL_MAX) || 10,
-    },
-    migrations: {
-      directory: './src/infrastructure/database/migrations',
-      tableName: 'knex_migrations',
-    },
-    seeds: {
-      directory: './src/infrastructure/database/seeds',
-    },
+    ...baseConfig,
+    debug: true,
   },
-
   test: {
-    client: 'pg',
+    ...baseConfig,
     connection: {
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT) || 5432,
+      ...baseConfig.connection,
       database: process.env.DB_NAME_TEST || 'attendance_db_test',
-      user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD || 'postgres',
     },
     pool: { min: 1, max: 5 },
-    migrations: {
-      directory: './src/infrastructure/database/migrations',
-      tableName: 'knex_migrations',
-    },
-    seeds: {
-      directory: './src/infrastructure/database/seeds',
-    },
   },
-
+  staging: {
+    ...baseConfig,
+    pool: { min: 2, max: 10 },
+  },
   production: {
-    client: 'pg',
+    ...baseConfig,
+    pool: { min: 2, max: 20 },
     connection: {
-      host: process.env.DB_HOST,
-      port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
+      ...baseConfig.connection,
       ssl: { rejectUnauthorized: false },
-    },
-    pool: {
-      min: parseInt(process.env.DB_POOL_MIN) || 2,
-      max: parseInt(process.env.DB_POOL_MAX) || 20,
-    },
-    migrations: {
-      directory: './src/infrastructure/database/migrations',
-      tableName: 'knex_migrations',
     },
   },
 };

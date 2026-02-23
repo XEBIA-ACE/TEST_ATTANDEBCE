@@ -1,143 +1,125 @@
-'use strict';
+// Mock repository before requiring the service
+jest.mock('../../../src/data/repositories/employeeRepository');
 
-jest.mock('../../../src/repositories/employeeRepository');
-
-const employeeService = require('../../../src/services/employeeService');
-const employeeRepository = require('../../../src/repositories/employeeRepository');
-const { NotFoundError, ConflictError } = require('../../../src/utils/errors');
+const employeeService = require('../../../src/business/services/employeeService');
+const employeeRepository = require('../../../src/data/repositories/employeeRepository');
+const { AppError } = require('../../../src/api/middlewares/errorHandler');
 
 const mockEmployee = {
-  id: 'emp-uuid-1',
-  employee_code: 'EMP-001',
-  first_name: 'Jane',
-  last_name: 'Doe',
-  email: 'jane@example.com',
-  status: 'active',
+  id: 'uuid-1',
+  firstName: 'Alice',
+  lastName: 'Smith',
+  email: 'alice@example.com',
+  department: 'Engineering',
+  position: 'Engineer',
+  employmentType: 'full_time',
+  hireDate: '2022-01-01',
+  isActive: true,
+  managerId: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
 };
 
 beforeEach(() => {
   jest.clearAllMocks();
 });
 
-describe('EmployeeService.getEmployee', () => {
-  it('returns an employee when found', async () => {
-    employeeRepository.findById.mockResolvedValue(mockEmployee);
-
-    const result = await employeeService.getEmployee(mockEmployee.id);
-    expect(result).toEqual(mockEmployee);
-    expect(employeeRepository.findById).toHaveBeenCalledWith(mockEmployee.id);
-  });
-
-  it('throws NotFoundError when employee does not exist', async () => {
-    employeeRepository.findById.mockResolvedValue(null);
-
-    await expect(employeeService.getEmployee('nonexistent-id')).rejects.toThrow(NotFoundError);
-  });
-});
-
-describe('EmployeeService.createEmployee', () => {
-  it('creates an employee when email and code are unique', async () => {
+// ─── createEmployee ───────────────────────────────────────────────────────────
+describe('createEmployee', () => {
+  it('creates an employee when email is unique', async () => {
     employeeRepository.findByEmail.mockResolvedValue(null);
-    employeeRepository.findByCode.mockResolvedValue(null);
     employeeRepository.create.mockResolvedValue(mockEmployee);
 
     const result = await employeeService.createEmployee({
-      employee_code: 'EMP-001',
-      first_name: 'Jane',
-      last_name: 'Doe',
-      email: 'jane@example.com',
+      firstName: 'Alice',
+      lastName: 'Smith',
+      email: 'alice@example.com',
+      department: 'Engineering',
+      position: 'Engineer',
+      hireDate: '2022-01-01',
     });
 
+    expect(result).toEqual(mockEmployee);
     expect(employeeRepository.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws 409 when email is already registered', async () => {
+    employeeRepository.findByEmail.mockResolvedValue(mockEmployee);
+
+    await expect(
+      employeeService.createEmployee({ email: 'alice@example.com' })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('throws 400 when managerId does not exist', async () => {
+    employeeRepository.findByEmail.mockResolvedValue(null);
+    employeeRepository.findById.mockResolvedValue(null);
+
+    await expect(
+      employeeService.createEmployee({
+        email: 'new@example.com',
+        managerId: 'nonexistent-uuid',
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+// ─── getEmployeeById ──────────────────────────────────────────────────────────
+describe('getEmployeeById', () => {
+  it('returns the employee when found', async () => {
+    employeeRepository.findById.mockResolvedValue(mockEmployee);
+    const result = await employeeService.getEmployeeById('uuid-1');
     expect(result).toEqual(mockEmployee);
   });
 
-  it('throws ConflictError when email already exists', async () => {
-    employeeRepository.findByEmail.mockResolvedValue(mockEmployee);
-    employeeRepository.findByCode.mockResolvedValue(null);
-
-    await expect(
-      employeeService.createEmployee({ email: 'jane@example.com', employee_code: 'EMP-099' })
-    ).rejects.toThrow(ConflictError);
-
-    expect(employeeRepository.create).not.toHaveBeenCalled();
-  });
-
-  it('throws ConflictError when employee_code is already in use', async () => {
-    employeeRepository.findByEmail.mockResolvedValue(null);
-    employeeRepository.findByCode.mockResolvedValue(mockEmployee);
-
-    await expect(
-      employeeService.createEmployee({ email: 'new@example.com', employee_code: 'EMP-001' })
-    ).rejects.toThrow(ConflictError);
-  });
-
-  it('hashes the password before storing', async () => {
-    employeeRepository.findByEmail.mockResolvedValue(null);
-    employeeRepository.findByCode.mockResolvedValue(null);
-    employeeRepository.create.mockImplementation((data) => Promise.resolve(data));
-
-    await employeeService.createEmployee({
-      employee_code: 'EMP-002',
-      email: 'new@example.com',
-      password: 'PlainText123!',
-    });
-
-    const createArg = employeeRepository.create.mock.calls[0][0];
-    expect(createArg.password).toBeUndefined();
-    expect(createArg.password_hash).toBeDefined();
-    expect(createArg.password_hash).not.toBe('PlainText123!');
-  });
-});
-
-describe('EmployeeService.updateEmployee', () => {
-  it('updates the employee successfully', async () => {
-    employeeRepository.findById.mockResolvedValue(mockEmployee);
-    employeeRepository.findByEmail.mockResolvedValue(null);
-    employeeRepository.update.mockResolvedValue({ ...mockEmployee, first_name: 'Updated' });
-
-    const result = await employeeService.updateEmployee(mockEmployee.id, { first_name: 'Updated' });
-    expect(result.first_name).toBe('Updated');
-  });
-
-  it('throws NotFoundError when employee does not exist', async () => {
+  it('throws 404 when employee not found', async () => {
     employeeRepository.findById.mockResolvedValue(null);
-
-    await expect(employeeService.updateEmployee('unknown', { first_name: 'X' })).rejects.toThrow(
-      NotFoundError
-    );
-  });
-
-  it('allows updating email to the same value (no conflict)', async () => {
-    employeeRepository.findById.mockResolvedValue(mockEmployee);
-    employeeRepository.update.mockResolvedValue(mockEmployee);
-
-    // Same email should not trigger uniqueness check
-    await expect(
-      employeeService.updateEmployee(mockEmployee.id, { email: mockEmployee.email })
-    ).resolves.not.toThrow();
-    expect(employeeRepository.findByEmail).not.toHaveBeenCalled();
+    await expect(employeeService.getEmployeeById('unknown')).rejects.toMatchObject({ statusCode: 404 });
   });
 });
 
-describe('EmployeeService.deleteEmployee', () => {
-  it('deactivates the employee by default (soft delete)', async () => {
+// ─── updateEmployee ───────────────────────────────────────────────────────────
+describe('updateEmployee', () => {
+  it('updates employee fields', async () => {
+    const updated = { ...mockEmployee, position: 'Senior Engineer' };
     employeeRepository.findById.mockResolvedValue(mockEmployee);
-    employeeRepository.update.mockResolvedValue({ ...mockEmployee, status: 'inactive' });
+    employeeRepository.update.mockResolvedValue(updated);
 
-    await employeeService.deleteEmployee(mockEmployee.id);
-
-    expect(employeeRepository.update).toHaveBeenCalledWith(mockEmployee.id, { status: 'inactive' });
-    expect(employeeRepository.delete).not.toHaveBeenCalled();
+    const result = await employeeService.updateEmployee('uuid-1', { position: 'Senior Engineer' });
+    expect(result.position).toBe('Senior Engineer');
   });
 
-  it('hard-deletes the employee when force=true', async () => {
+  it('throws 409 when new email is already taken', async () => {
+    const otherEmployee = { ...mockEmployee, id: 'uuid-2', email: 'other@example.com' };
     employeeRepository.findById.mockResolvedValue(mockEmployee);
-    employeeRepository.delete.mockResolvedValue(true);
+    employeeRepository.findByEmail.mockResolvedValue(otherEmployee);
 
-    await employeeService.deleteEmployee(mockEmployee.id, { force: true });
+    await expect(
+      employeeService.updateEmployee('uuid-1', { email: 'other@example.com' })
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
 
-    expect(employeeRepository.delete).toHaveBeenCalledWith(mockEmployee.id);
-    expect(employeeRepository.update).not.toHaveBeenCalled();
+  it('throws 400 when employee tries to be their own manager', async () => {
+    employeeRepository.findById.mockResolvedValue(mockEmployee);
+
+    await expect(
+      employeeService.updateEmployee('uuid-1', { managerId: 'uuid-1' })
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+// ─── deactivateEmployee ───────────────────────────────────────────────────────
+describe('deactivateEmployee', () => {
+  it('deactivates an active employee', async () => {
+    employeeRepository.findById.mockResolvedValue(mockEmployee);
+    employeeRepository.update.mockResolvedValue({ ...mockEmployee, isActive: false });
+
+    await employeeService.deactivateEmployee('uuid-1');
+    expect(employeeRepository.update).toHaveBeenCalledWith('uuid-1', { isActive: false });
+  });
+
+  it('throws 404 when employee not found', async () => {
+    employeeRepository.findById.mockResolvedValue(null);
+    await expect(employeeService.deactivateEmployee('unknown')).rejects.toMatchObject({ statusCode: 404 });
   });
 });

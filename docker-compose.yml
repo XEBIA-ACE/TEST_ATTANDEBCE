@@ -1,103 +1,72 @@
 version: '3.9'
 
 services:
-  # ─── API Service ──────────────────────────────────────────────────────────────
-  app:
+  api:
     build:
       context: .
-      target: deps  # Use deps stage for dev (includes nodemon)
-    command: npx nodemon src/server.js
+      target: builder   # Use builder stage for dev (includes devDeps + hot-reload)
     container_name: attendance-api
     restart: unless-stopped
     ports:
-      - '3000:3000'
+      - '${PORT:-3000}:3000'
     environment:
       NODE_ENV: development
       PORT: 3000
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: attendance_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      JWT_SECRET: local-dev-secret-change-in-production
-      JWT_EXPIRES_IN: 7d
+      DB_NAME: ${DB_NAME:-attendance_db}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_production}
+      JWT_EXPIRES_IN: 1d
       LOG_LEVEL: debug
       CORS_ORIGIN: '*'
     volumes:
-      # Hot-reload: mount source code
-      - ./src:/app/src
-      - ./logs:/app/logs
+      - .:/app
+      - /app/node_modules   # Prevent host node_modules from overwriting container's
+    command: ['node_modules/.bin/nodemon', 'server.js']
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - attendance-net
 
-  # ─── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: attendance-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: attendance_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
     ports:
-      - '5432:5432'
+      - '${DB_PORT:-5432}:5432'
+    environment:
+      POSTGRES_DB: ${DB_NAME:-attendance_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d attendance_db']
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-attendance_db}']
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
     networks:
       - attendance-net
 
-  # ─── Database migration runner ────────────────────────────────────────────────
-  migrate:
-    build:
-      context: .
-      target: deps
-    command: npx knex --knexfile src/db/knexfile.js migrate:latest
-    container_name: attendance-migrate
+  # Optional: PgAdmin for database inspection
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: attendance-pgadmin
+    restart: unless-stopped
+    ports:
+      - '5050:80'
     environment:
-      NODE_ENV: development
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: attendance_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     networks:
       - attendance-net
     profiles:
-      - migrate
-
-  # ─── Seed runner ─────────────────────────────────────────────────────────────
-  seed:
-    build:
-      context: .
-      target: deps
-    command: npx knex --knexfile src/db/knexfile.js seed:run
-    container_name: attendance-seed
-    environment:
-      NODE_ENV: development
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: attendance_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - attendance-net
-    profiles:
-      - seed
+      - tools   # Only starts with: docker compose --profile tools up
 
 volumes:
   postgres-data:

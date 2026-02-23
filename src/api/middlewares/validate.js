@@ -1,37 +1,38 @@
-'use strict';
-
-const Joi = require('joi');
-const { ValidationError } = require('../../utils/errors');
+const { AppError } = require('./errorHandler');
 
 /**
- * Generic Joi validation middleware factory.
- * Validates `req.body`, `req.query`, or `req.params` against the provided schema.
+ * Joi schema validation middleware factory.
  *
- * @param {Joi.Schema} schema  - Joi schema to validate against
- * @param {'body'|'query'|'params'} target  - Which part of the request to validate
- *
- * @example
- *   router.post('/employees', validate(createEmployeeSchema), controller.create)
+ * @param {Object} schema - Object with optional keys: body, query, params
+ * @returns Express middleware that validates and sanitises the request.
  */
-function validate(schema, target = 'body') {
-  return (req, res, next) => {
-    const { error, value } = schema.validate(req[target], {
-      abortEarly: false,   // collect ALL errors, not just the first
-      stripUnknown: true,  // silently drop fields not in the schema
-    });
+const validate = (schema) => (req, res, next) => {
+  const errors = [];
 
-    if (error) {
-      const details = error.details.map((d) => ({
-        field: d.path.join('.'),
-        message: d.message.replace(/['"]/g, ''),
-      }));
-      return next(new ValidationError('Validation failed', details));
+  for (const key of ['body', 'query', 'params']) {
+    if (schema[key]) {
+      const { error, value } = schema[key].validate(req[key], {
+        abortEarly: false,
+        stripUnknown: true,
+        convert: true,
+      });
+
+      if (error) {
+        errors.push(...error.details.map((d) => ({
+          field: `${key}.${d.path.join('.')}`,
+          message: d.message.replace(/['"]/g, ''),
+        })));
+      } else {
+        req[key] = value; // Replace with sanitised/coerced value
+      }
     }
+  }
 
-    // Replace the original object with the stripped/coerced value
-    req[target] = value;
-    return next();
-  };
-}
+  if (errors.length > 0) {
+    return next(new AppError('Validation failed', 422, errors));
+  }
+
+  return next();
+};
 
 module.exports = validate;

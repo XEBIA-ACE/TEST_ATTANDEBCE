@@ -1,60 +1,89 @@
-'use strict';
-
-const { AppError } = require('../../utils/errors');
-const { sendError } = require('../../utils/response');
-const logger = require('../../utils/logger');
+const logger = require('../../config/logger');
 
 /**
- * Central error-handling middleware.
- * Must be registered LAST in the Express app (after all routes).
- *
- * Classifies errors into:
- *  - Operational (AppError subclasses) → client-facing, structured response
- *  - Unexpected (everything else)       → generic 500, full stack logged
+ * Custom application error class with HTTP status codes.
  */
-// eslint-disable-next-line no-unused-vars
-function errorHandler(err, req, res, next) {
-  // Knex/PostgreSQL unique-constraint violation
-  if (err.code === '23505') {
-    return sendError(res, 'A record with this value already exists', 409, 'CONFLICT');
+class AppError extends Error {
+  constructor(message, statusCode = 500, details = null) {
+    super(message);
+    this.name = 'AppError';
+    this.statusCode = statusCode;
+    this.details = details;
+    Error.captureStackTrace(this, this.constructor);
   }
-
-  // Knex/PostgreSQL foreign-key violation
-  if (err.code === '23503') {
-    return sendError(res, 'Referenced resource does not exist', 422, 'FOREIGN_KEY_VIOLATION');
-  }
-
-  // JWT errors from the auth middleware
-  if (err.name === 'JsonWebTokenError') {
-    return sendError(res, 'Invalid token', 401, 'INVALID_TOKEN');
-  }
-  if (err.name === 'TokenExpiredError') {
-    return sendError(res, 'Token has expired', 401, 'TOKEN_EXPIRED');
-  }
-
-  if (err instanceof AppError) {
-    // Log at warn for 4xx (expected), error for 5xx (unexpected domain errors)
-    const logFn = err.statusCode >= 500 ? 'error' : 'warn';
-    logger[logFn]('Operational error', {
-      code: err.code,
-      message: err.message,
-      statusCode: err.statusCode,
-      path: req.path,
-      method: req.method,
-    });
-
-    return sendError(res, err.message, err.statusCode, err.code, err.details || undefined);
-  }
-
-  // Unknown / programmer error
-  logger.error('Unhandled error', {
-    message: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
-  });
-
-  return sendError(res, 'An unexpected error occurred', 500, 'INTERNAL_ERROR');
 }
 
-module.exports = errorHandler;
+/**
+ * Handles requests for routes that do not exist.
+ */
+const notFoundHandler = (req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: `Route ${req.method} ${req.originalUrl} not found`,
+  });
+};
+
+/**
+ * Centralised error handler. Normalises all errors (validation, DB, auth, etc.)
+ * into a consistent JSON response shape and logs them appropriately.
+ */
+const errorHandler = (err, req, res, next) => { // eslint-disable-line no-unused-vars
+  let statusCode = err.statusCode || 500;
+  let message = err.message || 'Internal Server Error';
+  let details = err.details || null;
+
+  // Knex / PostgreSQL constraint violations
+  if (err.code === '23505') {
+    statusCode = 409;
+    message = 'A record with this value already exists';
+  } else if (err.code === '23503') {
+    statusCode = 400;
+    message = 'Referenced resource does not exist';
+  }
+
+  // Joi validation errors
+  if (err.name === 'ValidationError') {
+    statusCode = 422;
+    message = 'Validation failed';
+    details = err.details?.map((d) => ({ field: d.path.join('.'), message: d.message }));
+  }
+
+  // JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    statusCode = 401;
+    message = 'Invalid token';
+  } else if (err.name === 'TokenExpiredError') {
+    statusCode = 401;
+    message = 'Token has expired';
+  }
+
+  // Log server errors with full stack trace
+  if (statusCode >= 500) {
+    logger.error('Unhandled server error', {
+      message: err.message,
+      stack: err.stack,
+      method: req.method,
+      url: req.originalUrl,
+      body: req.body,
+    });
+  } else {
+    logger.warn('Client error', {
+      statusCode,
+      message,
+      method: req.method,
+      url: req.originalUrl,
+    });
+  }
+
+  const response = { status: 'error', message };
+  if (details) response.details = details;
+
+  // Omit internal details from production responses
+  if (process.env.NODE_ENV === 'development' && statusCode >= 500) {
+    response.stack = err.stack;
+  }
+
+  res.status(statusCode).json(response);
+};
+
+module.exports = { AppError, errorHandler, notFoundHandler };

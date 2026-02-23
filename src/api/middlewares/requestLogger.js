@@ -1,40 +1,32 @@
-'use strict';
-
-const logger = require('../../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../../config/logger');
 
 /**
- * Express middleware that logs every inbound request and its response.
- * Sensitive headers (Authorization, Cookie) are redacted from logs.
+ * Attaches a unique request ID to each request and logs
+ * method, URL, status code, and response time for every request.
  */
-function requestLogger(req, res, next) {
-  const start = Date.now();
+const requestLogger = (req, res, next) => {
+  req.id = uuidv4();
+  const startTime = Date.now();
 
-  // Log request
-  logger.info('Incoming request', {
-    method: req.method,
-    path: req.path,
-    query: req.query,
-    ip: req.ip,
-    userAgent: req.get('User-Agent'),
-  });
+  res.setHeader('X-Request-Id', req.id);
 
-  // Intercept response to log status + duration
-  const originalEnd = res.end.bind(res);
-  res.end = function (...args) {
-    const duration = Date.now() - start;
-    const logFn = res.statusCode >= 400 ? 'warn' : 'info';
+  res.on('finish', () => {
+    const duration = Date.now() - startTime;
+    const logLevel = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
 
-    logger[logFn]('Request completed', {
+    logger[logLevel]('HTTP request', {
+      requestId: req.id,
       method: req.method,
-      path: req.path,
+      url: req.originalUrl,
       statusCode: res.statusCode,
       durationMs: duration,
+      userAgent: req.get('User-Agent'),
+      ip: req.ip,
     });
-
-    return originalEnd(...args);
-  };
+  });
 
   next();
-}
+};
 
 module.exports = requestLogger;
