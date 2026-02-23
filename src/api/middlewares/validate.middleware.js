@@ -1,27 +1,29 @@
-'use strict';
-
-const AppError = require('../../utils/app.error');
+const { ValidationError } = require('../../utils/errors');
 
 /**
- * Returns an Express middleware that validates the request using the given Joi schema.
+ * Factory that returns an Express middleware validating `req[source]`
+ * against a Joi schema.
  *
- * @param {import('joi').Schema} schema  - Joi schema to validate against
- * @param {'body'|'query'|'params'} [source='body']  - Which part of the request to validate
+ * @param {import('joi').Schema} schema
+ * @param {'body'|'query'|'params'} source - Which request property to validate
  */
 function validate(schema, source = 'body') {
-  return (req, res, next) => {
+  return (req, _res, next) => {
     const { error, value } = schema.validate(req[source], {
-      abortEarly: false,   // collect all errors, not just the first
-      stripUnknown: true,  // remove unrecognised fields
-      convert: true,       // coerce types (e.g. string '1' → number 1)
+      abortEarly: false,    // collect all errors, not just the first
+      stripUnknown: true,   // drop unrecognised keys
+      convert: true,        // allow type coercion (string '1' → number 1)
     });
 
     if (error) {
-      const messages = error.details.map((d) => d.message.replace(/"/g, "'"));
-      return next(AppError.badRequest('Validation failed', messages));
+      const details = error.details.map((d) => ({
+        field: d.path.join('.'),
+        message: d.message,
+      }));
+      return next(new ValidationError('Validation failed', details));
     }
 
-    // Replace the source with the cleaned/coerced value
+    // Replace the raw input with the validated + coerced value
     req[source] = value;
     return next();
   };

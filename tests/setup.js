@@ -1,14 +1,12 @@
-'use strict';
+// Global test configuration and helpers
 
-/**
- * Global test setup.
- * Sets NODE_ENV to 'test' so that:
- *  - Winston logger is silenced
- *  - JWT secret check is skipped
- *  - Sequelize uses an in-memory SQLite database
- */
-process.env.NODE_ENV = 'test';
-process.env.DB_DIALECT = 'sqlite';
-process.env.DB_STORAGE = ':memory:';
-process.env.JWT_SECRET = 'test_secret_key_at_least_32_chars_long__';
-process.env.PORT = '0'; // random port for tests
+// Silence logger output during tests
+jest.mock('../src/config/logger.config', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+  debug: jest.fn(),
+}));
+
+// Increase default test timeout for integration tests
+jest.setTimeout(30000);

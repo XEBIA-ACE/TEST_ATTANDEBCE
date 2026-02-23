@@ -1,52 +1,46 @@
-# ──────────────────────────────────────────────────────────────
-# Stage 1 – deps: install only production dependencies
-# ──────────────────────────────────────────────────────────────
+# ── Stage 1: Dependencies ─────────────────────────────────────────────────────
 FROM node:20-alpine AS deps
-
 WORKDIR /app
 
+# Copy only manifests to leverage Docker layer caching
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# ──────────────────────────────────────────────────────────────
-# Stage 2 – builder: install ALL deps (including devDeps)
-# This stage is used for future build steps (e.g. TypeScript)
-# ──────────────────────────────────────────────────────────────
+# ── Stage 2: Build / test (optional CI step) ─────────────────────────────────
 FROM node:20-alpine AS builder
-
 WORKDIR /app
+
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
 
-# ──────────────────────────────────────────────────────────────
-# Stage 3 – runner: lean final image
-# ──────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+# Run linting and tests during build (remove if too slow for your pipeline)
+# RUN npm test
 
-# Create a non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
+# ── Stage 3: Production image ─────────────────────────────────────────────────
+FROM node:20-alpine AS production
 WORKDIR /app
 
-# Copy production node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# Non-root user for security
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
 
-# Copy application source
+# Copy production deps from deps stage
+COPY --from=deps --chown=appuser:appgroup /app/node_modules ./node_modules
+
+# Copy source
 COPY --chown=appuser:appgroup . .
 
-# Create required runtime directories
-RUN mkdir -p data logs && chown -R appuser:appgroup data logs
+# Create logs directory with correct permissions
+RUN mkdir -p logs && chown appuser:appgroup logs
 
 USER appuser
 
-ENV NODE_ENV=production
-ENV PORT=3000
-
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Health check — requires the service to expose /health
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD wget -qO- http://localhost:3000/health || exit 1
 
-CMD ["node", "src/app.js"]
+CMD ["node", "src/server.js"]

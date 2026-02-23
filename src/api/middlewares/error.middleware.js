@@ -1,60 +1,67 @@
-'use strict';
-
-const logger = require('../../utils/logger');
-const ResponseHelper = require('../../utils/response.helper');
-const AppError = require('../../utils/app.error');
+const { AppError } = require('../../utils/errors');
+const { sendError } = require('../../utils/response');
+const logger = require('../../config/logger.config');
 
 /**
- * notFound – catches requests that fall through all routes and creates a 404 error.
- */
-function notFound(req, res, next) {
-  next(AppError.notFound(`Route ${req.method} ${req.originalUrl}`));
-}
-
-/**
- * globalErrorHandler – the Express 4-argument error handler.
- * Distinguishes between operational errors (AppError) and unexpected bugs.
+ * Catch-all Express error handler.
+ * Must be registered AFTER all routes with exactly 4 parameters.
  */
 // eslint-disable-next-line no-unused-vars
-function globalErrorHandler(err, req, res, next) {
-  // Sequelize unique constraint violation
+function errorHandler(err, req, res, _next) {
+  // Log the error with context
+  const meta = {
+    method: req.method,
+    path: req.path,
+    statusCode: err.statusCode,
+    errorCode: err.code,
+    ...(err.isOperational ? {} : { stack: err.stack }),
+  };
+
+  if (err.isOperational) {
+    logger.warn(`Operational error: ${err.message}`, meta);
+  } else {
+    logger.error(`Unexpected error: ${err.message}`, { ...meta, stack: err.stack });
+  }
+
+  // Sequelize unique constraint
   if (err.name === 'SequelizeUniqueConstraintError') {
-    return ResponseHelper.error(res, {
+    return sendError(res, {
       statusCode: 409,
-      message: 'A record with this value already exists',
-      errors: err.errors?.map((e) => e.message),
+      message: 'A record with that value already exists',
+      code: 'CONFLICT',
     });
   }
 
-  // Sequelize validation error
+  // Sequelize validation
   if (err.name === 'SequelizeValidationError') {
-    return ResponseHelper.error(res, {
+    const details = err.errors.map((e) => ({ field: e.path, message: e.message }));
+    return sendError(res, {
       statusCode: 422,
       message: 'Database validation failed',
-      errors: err.errors?.map((e) => e.message),
+      code: 'VALIDATION_ERROR',
+      details,
     });
   }
 
-  // Known operational errors (AppError instances)
-  if (err.isOperational) {
-    logger.warn({ message: err.message, statusCode: err.statusCode, path: req.path });
-    return ResponseHelper.error(res, {
+  // Known operational errors
+  if (err instanceof AppError) {
+    return sendError(res, {
       statusCode: err.statusCode,
       message: err.message,
-      errors: err.errors,
+      code: err.code,
+      details: err.details,
     });
   }
 
-  // Unknown / programming errors – log the full stack and return a generic message
-  logger.error({ message: err.message, stack: err.stack, path: req.path });
-
-  return ResponseHelper.error(res, {
+  // Unknown / programmer errors — hide internals in production
+  return sendError(res, {
     statusCode: 500,
     message:
       process.env.NODE_ENV === 'production'
         ? 'An unexpected error occurred'
         : err.message,
+    code: 'INTERNAL_ERROR',
   });
 }
 
-module.exports = { notFound, globalErrorHandler };
+module.exports = errorHandler;

@@ -1,17 +1,33 @@
-'use strict';
+const logger = require('../../config/logger.config');
 
-const morgan = require('morgan');
-const logger = require('../../utils/logger');
+/**
+ * Logs each request on completion with method, path, status, and duration.
+ */
+function requestLogger(req, res, next) {
+  const start = Date.now();
 
-// Pipe morgan tokens into the winston logger
-const stream = {
-  write: (message) => logger.http(message.trim()),
-};
+  // Mask the Authorization header value for security
+  const sanitizedHeaders = { ...req.headers };
+  if (sanitizedHeaders.authorization) {
+    sanitizedHeaders.authorization = 'Bearer [REDACTED]';
+  }
 
-// Use 'combined' format in prod for standard Apache log fields; 'dev' otherwise
-const format =
-  process.env.NODE_ENV === 'production'
-    ? ':remote-addr :method :url :status :res[content-length] - :response-time ms'
-    : 'dev';
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
 
-module.exports = morgan(format, { stream });
+    logger[level]('HTTP request', {
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      durationMs: duration,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      requestId: req.id,
+    });
+  });
+
+  next();
+}
+
+module.exports = requestLogger;

@@ -1,108 +1,101 @@
-'use strict';
+const attendanceService = require('../../../src/services/attendance.service');
+const attendanceRepository = require('../../../src/repositories/attendance.repository');
+const employeeRepository = require('../../../src/repositories/employee.repository');
+const { NotFoundError, ConflictError, BadRequestError } = require('../../../src/utils/errors');
 
-require('../../setup');
+jest.mock('../../../src/repositories/attendance.repository');
+jest.mock('../../../src/repositories/employee.repository');
 
-const attendanceService = require('../../../src/business/services/attendance.service');
-const attendanceRepository = require('../../../src/data/repositories/attendance.repository');
-const employeeRepository = require('../../../src/data/repositories/employee.repository');
-
-jest.mock('../../../src/data/repositories/attendance.repository');
-jest.mock('../../../src/data/repositories/employee.repository');
-
-const EMPLOYEE_ID = 'employee-uuid-001';
-const TODAY = new Date().toISOString().split('T')[0];
-
-const mockEmployee = {
-  id: EMPLOYEE_ID,
+const activeEmployee = {
+  id: 'emp-1',
   isActive: true,
-  expectedHoursPerDay: 8,
+  toJSON() { return this; },
 };
 
+const buildRecord = (overrides = {}) => ({
+  id: 'rec-1',
+  employeeId: 'emp-1',
+  date: '2024-01-15',
+  clockIn: new Date('2024-01-15T09:00:00Z'),
+  clockOut: null,
+  breakStart: null,
+  breakEnd: null,
+  breakDurationMinutes: 0,
+  status: 'present',
+  toJSON() { return this; },
+  ...overrides,
+});
+
 describe('AttendanceService', () => {
-  afterEach(() => jest.clearAllMocks());
+  beforeEach(() => jest.clearAllMocks());
 
-  // ── checkIn ──────────────────────────────────────────────────────────────────
-  describe('checkIn()', () => {
-    it('creates a check-in record for an active employee', async () => {
-      employeeRepository.findById.mockResolvedValue(mockEmployee);
+  describe('clockIn', () => {
+    it('creates a clock-in record', async () => {
+      employeeRepository.findById.mockResolvedValue(activeEmployee);
       attendanceRepository.findByEmployeeAndDate.mockResolvedValue(null);
+      attendanceRepository.findActiveClockIn.mockResolvedValue(null);
+      attendanceRepository.create.mockResolvedValue(buildRecord());
 
-      const mockRecord = { id: 'att-1', employeeId: EMPLOYEE_ID, date: TODAY };
-      attendanceRepository.create.mockResolvedValue(mockRecord);
-
-      const result = await attendanceService.checkIn(EMPLOYEE_ID, '127.0.0.1');
-      expect(result).toBe(mockRecord);
+      const result = await attendanceService.clockIn('emp-1', { date: '2024-01-15' });
+      expect(result.employeeId).toBe('emp-1');
       expect(attendanceRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ employeeId: EMPLOYEE_ID, date: TODAY })
+        expect.objectContaining({ employeeId: 'emp-1', date: '2024-01-15' }),
       );
     });
 
-    it('throws 404 when employee does not exist', async () => {
+    it('throws NotFoundError for unknown employee', async () => {
       employeeRepository.findById.mockResolvedValue(null);
-
-      await expect(attendanceService.checkIn(EMPLOYEE_ID)).rejects.toMatchObject({
-        statusCode: 404,
-      });
+      await expect(attendanceService.clockIn('bad-id')).rejects.toThrow(NotFoundError);
     });
 
-    it('throws 403 when employee is inactive', async () => {
-      employeeRepository.findById.mockResolvedValue({ ...mockEmployee, isActive: false });
-
-      await expect(attendanceService.checkIn(EMPLOYEE_ID)).rejects.toMatchObject({
-        statusCode: 403,
-      });
+    it('throws ConflictError when record for date exists', async () => {
+      employeeRepository.findById.mockResolvedValue(activeEmployee);
+      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(buildRecord());
+      await expect(
+        attendanceService.clockIn('emp-1', { date: '2024-01-15' }),
+      ).rejects.toThrow(ConflictError);
     });
 
-    it('throws 409 when already checked in today', async () => {
-      employeeRepository.findById.mockResolvedValue(mockEmployee);
-      attendanceRepository.findByEmployeeAndDate.mockResolvedValue({ id: 'existing' });
-
-      await expect(attendanceService.checkIn(EMPLOYEE_ID)).rejects.toMatchObject({
-        statusCode: 409,
-      });
+    it('throws ConflictError when open session exists', async () => {
+      employeeRepository.findById.mockResolvedValue(activeEmployee);
+      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(null);
+      attendanceRepository.findActiveClockIn.mockResolvedValue(buildRecord());
+      await expect(
+        attendanceService.clockIn('emp-1', { date: '2024-01-16' }),
+      ).rejects.toThrow(ConflictError);
     });
   });
 
-  // ── checkOut ─────────────────────────────────────────────────────────────────
-  describe('checkOut()', () => {
-    it('records check-out and computes worked hours', async () => {
-      employeeRepository.findById.mockResolvedValue(mockEmployee);
+  describe('clockOut', () => {
+    it('records clock-out on open session', async () => {
+      const openSession = buildRecord({ clockIn: new Date(Date.now() - 3600000) });
+      attendanceRepository.findActiveClockIn.mockResolvedValue(openSession);
+      const closed = buildRecord({ clockOut: new Date() });
+      attendanceRepository.update.mockResolvedValue(closed);
 
-      const checkInTime = new Date();
-      checkInTime.setHours(checkInTime.getHours() - 8);
-
-      const existingRecord = { id: 'att-1', checkIn: checkInTime, checkOut: null };
-      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(existingRecord);
-      attendanceRepository.update.mockResolvedValue({ ...existingRecord, checkOut: new Date() });
-
-      const result = await attendanceService.checkOut(EMPLOYEE_ID, '127.0.0.1');
-      expect(result).toBeDefined();
+      const result = await attendanceService.clockOut('emp-1');
       expect(attendanceRepository.update).toHaveBeenCalledWith(
-        'att-1',
-        expect.objectContaining({ workedHoursStored: expect.any(Number) })
+        'rec-1',
+        expect.objectContaining({ clockOut: expect.any(Date) }),
       );
+      expect(result.clockOut).toBeTruthy();
     });
 
-    it('throws 400 when no check-in exists for today', async () => {
-      employeeRepository.findById.mockResolvedValue(mockEmployee);
-      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(null);
+    it('throws BadRequestError when no open session', async () => {
+      attendanceRepository.findActiveClockIn.mockResolvedValue(null);
+      await expect(attendanceService.clockOut('emp-1')).rejects.toThrow(BadRequestError);
+    });
+  });
 
-      await expect(attendanceService.checkOut(EMPLOYEE_ID)).rejects.toMatchObject({
-        statusCode: 400,
-      });
+  describe('deleteRecord', () => {
+    it('deletes successfully', async () => {
+      attendanceRepository.delete.mockResolvedValue(true);
+      await expect(attendanceService.deleteRecord('rec-1')).resolves.toBeUndefined();
     });
 
-    it('throws 409 when already checked out', async () => {
-      employeeRepository.findById.mockResolvedValue(mockEmployee);
-      attendanceRepository.findByEmployeeAndDate.mockResolvedValue({
-        id: 'att-1',
-        checkIn: new Date(),
-        checkOut: new Date(), // already checked out
-      });
-
-      await expect(attendanceService.checkOut(EMPLOYEE_ID)).rejects.toMatchObject({
-        statusCode: 409,
-      });
+    it('throws NotFoundError when record missing', async () => {
+      attendanceRepository.delete.mockResolvedValue(false);
+      await expect(attendanceService.deleteRecord('bad-id')).rejects.toThrow(NotFoundError);
     });
   });
 });

@@ -1,46 +1,41 @@
-'use strict';
-
 const jwt = require('jsonwebtoken');
 const appConfig = require('../../config/app.config');
-const AppError = require('../../utils/app.error');
+const { UnauthorizedError, ForbiddenError } = require('../../utils/errors');
 
 /**
- * authenticate – verifies the Bearer JWT in the Authorization header.
+ * Middleware: verify Bearer JWT.
  *
- * On success it attaches `req.user = { id, employeeCode, email, role }`.
- * This is a placeholder implementation; swap with your identity provider as needed.
+ * In a real deployment this would hit a user store; here it validates
+ * the signature and expiry, then attaches the decoded payload to req.user.
  */
-function authenticate(req, res, next) {
+function authenticate(req, _res, next) {
   const authHeader = req.headers.authorization;
-
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return next(AppError.unauthorized('Missing or malformed Authorization header'));
+    return next(new UnauthorizedError('Bearer token required'));
   }
 
-  const token = authHeader.slice(7);
-
+  const token = authHeader.split(' ')[1];
   try {
-    const payload = jwt.verify(token, appConfig.jwt.secret);
-    req.user = payload;
+    const decoded = jwt.verify(token, appConfig.jwt.secret);
+    req.user = decoded; // { sub, role, iat, exp, … }
     return next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
-      return next(AppError.unauthorized('Token has expired'));
+      return next(new UnauthorizedError('Token has expired'));
     }
-    return next(AppError.unauthorized('Invalid token'));
+    return next(new UnauthorizedError('Invalid token'));
   }
 }
 
 /**
- * authorize – restricts access to users with specific roles.
- *
- * @param {...string} roles  - Allowed roles (e.g., 'admin', 'manager')
+ * Factory: require the authenticated user to have a specific role.
+ * @param {...string} roles - Allowed roles (e.g. 'admin', 'manager')
  */
 function authorize(...roles) {
-  return (req, res, next) => {
-    if (!req.user) return next(AppError.unauthorized());
+  return (req, _res, next) => {
+    if (!req.user) return next(new UnauthorizedError());
     if (roles.length && !roles.includes(req.user.role)) {
-      return next(AppError.forbidden('You do not have permission to perform this action'));
+      return next(new ForbiddenError(`Role '${req.user.role}' is not permitted`));
     }
     return next();
   };

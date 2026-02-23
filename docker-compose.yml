@@ -1,39 +1,6 @@
 version: '3.9'
 
 services:
-  # ── Application ─────────────────────────────────────────────────────────────
-  app:
-    build:
-      context: .
-      target: builder   # use the builder stage so devDeps are available in dev
-    image: attendance-tracking-service:dev
-    container_name: attendance_app
-    restart: unless-stopped
-    ports:
-      - '${PORT:-3000}:3000'
-    environment:
-      NODE_ENV: development
-      PORT: 3000
-      DB_DIALECT: postgres
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: attendance_db
-      DB_USER: postgres
-      DB_PASSWORD: postgres_password
-      JWT_SECRET: dev_secret_please_change_in_production_long_string
-      LOG_LEVEL: debug
-      CORS_ORIGIN: '*'
-    volumes:
-      - ./src:/app/src          # hot-reload source changes
-      - ./tests:/app/tests
-      - app_logs:/app/logs
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ['npx', 'nodemon', 'src/app.js']
-    networks:
-      - attendance_net
-
   # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -42,7 +9,7 @@ services:
     environment:
       POSTGRES_DB: attendance_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_PASSWORD: postgres
     ports:
       - '5432:5432'
     volumes:
@@ -52,15 +19,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - attendance_net
 
-  # ── pgAdmin (optional GUI) ───────────────────────────────────────────────────
+  # ── Attendance Tracking Service ───────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: attendance_app
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      JWT_SECRET: dev-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      LOG_LEVEL: info
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── pgAdmin (optional, comment out if not needed) ─────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: attendance_pgadmin
     restart: unless-stopped
-    profiles: ['tools']   # only starts with: docker compose --profile tools up
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
@@ -68,13 +65,9 @@ services:
       - '5050:80'
     depends_on:
       - postgres
-    networks:
-      - attendance_net
+    profiles:
+      - tools   # start with: docker compose --profile tools up
 
 volumes:
   postgres_data:
-  app_logs:
-
-networks:
-  attendance_net:
-    driver: bridge
+    driver: local

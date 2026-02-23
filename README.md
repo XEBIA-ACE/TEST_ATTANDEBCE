@@ -1,305 +1,21 @@
 # Attendance Tracking Service
 
-A production-ready REST API for tracking employee attendance – check-ins, check-outs, status management, and reporting.
-
-Built with **Node.js 20**, **Express 4**, **Sequelize 6**, and **SQLite** (dev) / **PostgreSQL** (prod).
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [Running with Docker](#running-with-docker)
-- [API Reference](#api-reference)
-- [Testing](#testing)
-- [Project Structure](#project-structure)
-
----
-
-## Features
-
-- Employee CRUD with soft-delete
-- Daily check-in / check-out with automatic worked-hours calculation
-- Automatic late-arrival detection (configurable threshold)
-- Half-day detection when worked hours < 50% of expected daily hours
-- Paginated, filterable attendance records
-- Attendance summary reports by date range
-- Structured JSON logging (Winston + daily log rotation)
-- OpenAPI 3.0 documentation (Swagger UI)
-- JWT authentication scaffold
-- Rate limiting, CORS, helmet security headers
-- SQLite for development, PostgreSQL for production
-- Multi-stage Docker image (~160 MB final layer)
-- Health and readiness endpoints
-
----
-
-## Architecture
-
-```
-src/
-├── api/              # HTTP layer (routes, controllers, middleware, validators)
-├── business/         # Business logic (services)
-├── data/             # Data access (models, repositories, migrations, seeders)
-├── config/           # App, DB, and Swagger configuration
-└── utils/            # Logger, response helper, AppError
-```
-
-The service follows **Clean Architecture** with strict layer separation:
-
-```
-HTTP Request
-    ↓
-Router → Middleware (auth, validate, rate-limit)
-    ↓
-Controller          (HTTP ↔ Service translation only)
-    ↓
-Service             (all business rules live here)
-    ↓
-Repository          (all DB queries live here)
-    ↓
-Sequelize Model     (schema definition)
-```
-
----
-
-## Prerequisites
-
-| Tool | Version |
-|------|---------|
-| Node.js | ≥ 18.0.0 |
-| npm | ≥ 9 |
-| Docker & Docker Compose | optional |
-
----
-
-## Quick Start
-
-### 1. Clone and install
-
-```bash
-git clone <repo-url>
-cd attendance-tracking-service
-npm install
-```
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env with your values (JWT_SECRET is required)
-```
-
-### 3. Start the server
-
-```bash
-# Development (auto-restarts on change)
-npm run dev
-
-# Production
-npm start
-```
-
-The server auto-creates the SQLite database and syncs the schema on startup in development mode.
-
-### 4. Seed sample data (optional)
-
-```bash
-npm run seed
-```
-
-### 5. Open API docs
-
-```
-http://localhost:3000/api-docs
-```
-
----
-
-## Configuration
-
-All configuration is driven by environment variables. Copy `.env.example` to `.env` and update the values.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NODE_ENV` | `development` | `development`, `staging`, or `production` |
-| `PORT` | `3000` | HTTP port |
-| `DB_DIALECT` | `sqlite` | `sqlite` or `postgres` |
-| `DB_STORAGE` | `./data/attendance.db` | SQLite file path |
-| `DB_HOST` | `localhost` | PostgreSQL host |
-| `DB_PORT` | `5432` | PostgreSQL port |
-| `DB_NAME` | `attendance_db` | Database name |
-| `DB_USER` | `postgres` | Database user |
-| `DB_PASSWORD` | *(required)* | Database password |
-| `JWT_SECRET` | *(required in prod)* | Secret for signing JWTs |
-| `JWT_EXPIRES_IN` | `8h` | Token TTL |
-| `RATE_LIMIT_WINDOW_MS` | `900000` | Rate limit window (ms) |
-| `RATE_LIMIT_MAX` | `100` | Max requests per window |
-| `LOG_LEVEL` | `info` | `error`, `warn`, `info`, `http`, `debug` |
-| `LOG_DIR` | `./logs` | Log file directory |
-| `CORS_ORIGIN` | `*` | Allowed CORS origins |
-
----
-
-## Running with Docker
-
-### Development (SQLite – no external DB needed)
-
-```bash
-# Copy and adjust env vars
-cp .env.example .env
-
-docker build --target builder -t attendance-dev .
-docker run -p 3000:3000 --env-file .env attendance-dev node src/app.js
-```
-
-### Full stack with PostgreSQL
-
-```bash
-docker compose up --build
-```
-
-- API:      http://localhost:3000
-- API docs: http://localhost:3000/api-docs
-- Health:   http://localhost:3000/health
-
-### Include pgAdmin (optional GUI)
-
-```bash
-docker compose --profile tools up
-# pgAdmin: http://localhost:5050  (admin@example.com / admin)
-```
-
-### Production image
-
-```bash
-docker build --target runner -t attendance-tracking-service:latest .
-```
-
----
-
-## API Reference
-
-All endpoints are prefixed with `/api/v1`. Full interactive documentation is available at `/api-docs`.
-
-### Authentication
-
-Protected endpoints require a `Bearer` JWT in the `Authorization` header:
-
-```
-Authorization: Bearer <token>
-```
-
-> The current JWT implementation is a placeholder. Integrate with your identity provider (Auth0, Keycloak, custom login endpoint, etc.).
-
----
-
-### Health
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | No | Liveness check |
-| GET | `/health/ready` | No | Readiness check (DB ping) |
-
----
-
-### Employees
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/employees` | List employees (paginated) |
-| POST | `/api/v1/employees` | Create employee |
-| GET | `/api/v1/employees/:id` | Get employee by ID |
-| PATCH | `/api/v1/employees/:id` | Update employee |
-| DELETE | `/api/v1/employees/:id` | Soft-delete employee |
-
-**Query params for GET /employees:**
-- `department` – filter by department name
-- `isActive` – `true` or `false`
-- `search` – full-text search on name, email, or code
-- `page` (default: 1), `limit` (default: 20, max: 100)
-
----
-
-### Attendance
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/attendance/check-in` | Employee check-in |
-| POST | `/api/v1/attendance/check-out` | Employee check-out |
-| GET | `/api/v1/attendance/report` | Attendance summary report |
-| GET | `/api/v1/attendance` | List records (paginated) |
-| POST | `/api/v1/attendance` | Manually create a record (admin) |
-| GET | `/api/v1/attendance/:id` | Get single record |
-| PATCH | `/api/v1/attendance/:id` | Update record (admin) |
-| DELETE | `/api/v1/attendance/:id` | Delete record (admin) |
-
-**Check-in request body:**
-```json
-{ "employeeId": "uuid" }
-```
-
-**Report query params:**
-- `startDate` *(required)* – ISO date, e.g. `2024-01-01`
-- `endDate` *(required)* – ISO date, e.g. `2024-01-31`
-- `employeeId` *(optional)* – filter to a single employee; omit for company-wide
-
-**Report response example:**
-```json
-{
-  "success": true,
-  "data": {
-    "employeeId": "uuid-or-null",
-    "startDate": "2024-01-01",
-    "endDate": "2024-01-31",
-    "summary": {
-      "totalDays": 23,
-      "presentDays": 20,
-      "absentDays": 1,
-      "lateDays": 2,
-      "halfDays": 0,
-      "onLeaveDays": 0,
-      "totalWorkedHours": 167.5
-    }
-  }
-}
-```
-
----
-
-### Status values
-
-| Status | Description |
-|--------|-------------|
-| `present` | Checked in on time |
-| `late` | Checked in after 09:15 |
-| `absent` | No check-in for the day |
-| `half_day` | Worked < 50% of expected daily hours |
-| `on_leave` | Manually set by administrator |
-
----
-
-## Testing
-
-```bash
-# Run all tests
-npm test
-
-# Unit tests only
-npm run test:unit
-
-# Integration tests only
-npm run test:integration
-
-# With coverage report
-npm run test:coverage
-```
-
-Integration tests use an in-memory SQLite database and do not require any running services.
+A production-ready REST API for tracking employee attendance — clock-in/out events, breaks, overtime calculation, and reporting.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js 20 |
+| Framework | Express 4 |
+| ORM | Sequelize 6 |
+| Database | PostgreSQL 16 |
+| Validation | Joi |
+| Auth | JWT (jsonwebtoken) |
+| Logging | Winston + daily-rotate-file |
+| Docs | Swagger / OpenAPI 3.0 |
+| Testing | Jest + Supertest |
+| Container | Docker / Docker Compose |
 
 ---
 
@@ -309,29 +25,363 @@ Integration tests use an in-memory SQLite database and do not require any runnin
 attendance-tracking-service/
 ├── src/
 │   ├── api/
-│   │   ├── controllers/        # HTTP request handlers
-│   │   ├── middlewares/        # auth, validation, logging, error handling
-│   │   ├── routes/             # Express routers + Swagger JSDoc
+│   │   ├── controllers/        # HTTP layer — parse request, call service, format response
+│   │   ├── middlewares/        # Auth, validation, error handling, request logging
+│   │   ├── routes/             # Express routers
 │   │   └── validators/         # Joi schemas
-│   ├── business/
-│   │   └── services/           # Business rules and orchestration
-│   ├── config/                 # app, database, swagger configuration
-│   ├── data/
-│   │   ├── models/             # Sequelize model definitions
-│   │   ├── repositories/       # Database query abstraction
-│   │   ├── migrations/         # Schema migration runner
-│   │   └── seeders/            # Development seed data
-│   ├── utils/                  # Logger, AppError, ResponseHelper
-│   └── app.js                  # Express app setup + server bootstrap
+│   ├── config/                 # App, DB, and logger configuration
+│   ├── database/
+│   │   ├── connection.js       # Sequelize instance
+│   │   ├── migrate.js          # Umzug migration runner
+│   │   ├── seed.js             # Development seed data
+│   │   └── migrations/         # Ordered migration files
+│   ├── docs/
+│   │   └── swagger.js          # OpenAPI spec generator
+│   ├── models/                 # Sequelize model definitions
+│   ├── repositories/           # Data-access layer (all DB queries live here)
+│   ├── services/               # Business logic layer
+│   ├── utils/
+│   │   ├── errors.js           # Custom error classes
+│   │   └── response.js         # Standardised response helpers
+│   ├── app.js                  # Express app setup
+│   └── server.js               # Entry point / graceful shutdown
 ├── tests/
-│   ├── unit/                   # Service and utility unit tests
-│   ├── integration/            # Full HTTP integration tests (supertest)
-│   └── setup.js                # Test environment variables
+│   ├── unit/                   # Pure unit tests (repositories mocked)
+│   └── integration/            # HTTP-level tests (service mocked)
 ├── .env.example
-├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
-├── jest.config.js
-├── package.json
-└── README.md
+└── package.json
 ```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 20+
+- PostgreSQL 16+ **or** Docker + Docker Compose
+
+### Option A — Docker Compose (recommended)
+
+```bash
+# Clone and enter the directory
+git clone <repo-url>
+cd attendance-tracking-service
+
+# Start the API + database
+docker compose up --build
+
+# In a second terminal, run migrations
+docker compose exec app npm run migrate
+
+# (optional) Seed sample data
+docker compose exec app npm run seed
+```
+
+The API is available at `http://localhost:3000`.
+Swagger UI: `http://localhost:3000/api-docs`
+
+---
+
+### Option B — Local Node.js
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your Postgres credentials
+
+# 3. Run migrations
+npm run migrate
+
+# 4. (optional) Seed
+npm run seed
+
+# 5. Start the dev server (auto-reload via nodemon)
+npm run dev
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NODE_ENV` | `development` | `development`, `test`, or `production` |
+| `PORT` | `3000` | HTTP port |
+| `DB_HOST` | `localhost` | Postgres host |
+| `DB_PORT` | `5432` | Postgres port |
+| `DB_NAME` | `attendance_db` | Database name |
+| `DB_USER` | `postgres` | Database user |
+| `DB_PASSWORD` | `postgres` | Database password |
+| `JWT_SECRET` | — | **Required in production** |
+| `JWT_EXPIRES_IN` | `24h` | Access token TTL |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | Requests per window |
+| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+
+See `.env.example` for the full list.
+
+---
+
+## API Reference
+
+### Base URL
+
+```
+/api/v1
+```
+
+All endpoints return a consistent JSON envelope:
+
+**Success**
+```json
+{
+  "success": true,
+  "data": { ... },
+  "meta": { "total": 42, "page": 1, "limit": 20, "totalPages": 3 }
+}
+```
+
+**Error**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Employee not found",
+    "details": []
+  }
+}
+```
+
+---
+
+### Employees
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/employees` | List employees (paginated) |
+| `GET` | `/api/v1/employees/:id` | Get employee by ID |
+| `POST` | `/api/v1/employees` | Create employee |
+| `PATCH` | `/api/v1/employees/:id` | Update employee |
+| `DELETE` | `/api/v1/employees/:id` | Soft-delete employee |
+
+**List query params**: `page`, `limit`, `search`, `departmentId`, `isActive`, `employmentType`
+
+**Create body**:
+```json
+{
+  "firstName": "Alice",
+  "lastName": "Johnson",
+  "email": "alice@example.com",
+  "hireDate": "2024-01-15",
+  "departmentId": "uuid",
+  "position": "Engineer",
+  "employmentType": "full_time",
+  "scheduledHoursPerDay": 8,
+  "workDays": [1,2,3,4,5],
+  "timezone": "America/New_York"
+}
+```
+
+---
+
+### Attendance
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/attendance` | List records (paginated) |
+| `GET` | `/api/v1/attendance/summary` | Aggregate stats |
+| `GET` | `/api/v1/attendance/:id` | Get record by ID |
+| `POST` | `/api/v1/attendance/clock-in` | Clock in |
+| `POST` | `/api/v1/attendance/clock-out` | Clock out |
+| `POST` | `/api/v1/attendance/break/start` | Start break |
+| `POST` | `/api/v1/attendance/break/end` | End break |
+| `POST` | `/api/v1/attendance/manual` | Create manual record (admin) |
+| `PATCH` | `/api/v1/attendance/:id` | Update record |
+| `DELETE` | `/api/v1/attendance/:id` | Soft-delete record |
+
+**Clock-in body**:
+```json
+{
+  "employeeId": "uuid",
+  "date": "2024-06-10",
+  "location": { "lat": 40.7128, "lng": -74.006, "address": "NYC" },
+  "notes": "On-site"
+}
+```
+
+**Clock-out body**:
+```json
+{
+  "employeeId": "uuid",
+  "location": { "lat": 40.7128, "lng": -74.006 }
+}
+```
+
+**Summary query params**: `employeeId`, `startDate`, `endDate`
+
+---
+
+### System
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check (DB ping, memory) |
+| `GET` | `/metrics` | Basic process metrics |
+| `GET` | `/api-docs` | Swagger UI (non-production only) |
+
+---
+
+## Authentication
+
+All `/api/v1/*` endpoints accept a Bearer JWT:
+
+```
+Authorization: Bearer <token>
+```
+
+The `auth.middleware.js` verifies the signature and expiry. The `authorize(...roles)` factory can restrict endpoints to specific roles (`admin`, `manager`, etc.).
+
+> **Placeholder**: Token issuance (login endpoint) is outside the scope of this service — integrate with your identity provider or add a `/auth/login` route.
+
+---
+
+## Database Schema
+
+### `departments`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID PK | |
+| `name` | VARCHAR(100) | Unique |
+| `manager_id` | UUID FK → employees | Nullable |
+| `is_active` | BOOLEAN | |
+
+### `employees`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID PK | |
+| `employee_number` | VARCHAR(20) | Unique, auto-generated |
+| `first_name`, `last_name` | VARCHAR(100) | |
+| `email` | VARCHAR(255) | Unique |
+| `department_id` | UUID FK | Nullable |
+| `employment_type` | ENUM | full_time / part_time / contractor / intern |
+| `hire_date` | DATE | |
+| `scheduled_hours_per_day` | DECIMAL | Default 8.0 |
+| `work_days` | INTEGER[] | ISO weekday numbers |
+| `timezone` | VARCHAR(50) | |
+
+### `attendance_records`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID PK | |
+| `employee_id` | UUID FK | |
+| `date` | DATE | Unique per employee (non-deleted) |
+| `clock_in`, `clock_out` | TIMESTAMPTZ | |
+| `total_hours` | DECIMAL | Auto-calculated on clock-out |
+| `overtime_hours` | DECIMAL | hours beyond `scheduled_hours_per_day` |
+| `status` | ENUM | present / absent / late / half_day / on_leave / holiday / remote |
+| `break_duration_minutes` | INTEGER | |
+| `clock_in_location`, `clock_out_location` | JSONB | `{ lat, lng, address }` |
+| `is_manual_entry` | BOOLEAN | |
+| `approved_by` | UUID FK → employees | |
+
+All tables support soft-delete (`deleted_at`) and have `created_at`/`updated_at` timestamps.
+
+---
+
+## Testing
+
+```bash
+# All tests
+npm test
+
+# Unit tests only
+npm run test:unit
+
+# Integration tests only
+npm run test:integration
+
+# Coverage report
+npm run test:coverage
+```
+
+Tests do **not** require a live database — the repository layer is mocked in unit tests and the service layer is mocked in integration tests.
+
+---
+
+## Running Migrations
+
+```bash
+# Apply pending migrations
+npm run migrate
+
+# Revert the latest migration
+npm run migrate:undo
+```
+
+---
+
+## Architecture Overview
+
+```
+HTTP Request
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│  Express App (app.js)                   │
+│  ┌──────────────────────────────────┐   │
+│  │  Middleware Chain                │   │
+│  │  helmet → cors → rateLimit →     │   │
+│  │  requestLogger → routes          │   │
+│  └──────────────────────────────────┘   │
+│  ┌──────────────────────────────────┐   │
+│  │  Routes  (validate → controller) │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│  Service Layer (business rules)         │
+│  - Input sanitisation & rule checks     │
+│  - Orchestrates repository calls        │
+└─────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│  Repository Layer (data access)         │
+│  - All Sequelize/SQL queries here       │
+│  - Returns model instances              │
+└─────────────────────────────────────────┘
+     │
+     ▼
+  PostgreSQL
+```
+
+**Key design decisions**:
+- **Soft deletes** on all entities (`paranoid: true`) preserve audit history
+- **UTC storage** — all timestamps stored in UTC; employee `timezone` field used for local-date calculations on the client
+- **Hooks** — `beforeSave` on `AttendanceRecord` auto-computes `totalHours` / `overtimeHours`
+- **Single active session** — the service layer enforces one open clock-in per employee at a time
+- **Role-based auth** — the `authorize(...roles)` middleware factory makes it easy to protect any route
+
+---
+
+## Production Checklist
+
+- [ ] Set strong `JWT_SECRET` and `JWT_REFRESH_SECRET` values
+- [ ] Enable SSL for the database (`dialectOptions.ssl`)
+- [ ] Set `NODE_ENV=production` to disable Swagger UI
+- [ ] Configure proper `CORS_ORIGINS`
+- [ ] Mount a volume for the `logs/` directory
+- [ ] Set up log shipping (e.g. CloudWatch, Datadog)
+- [ ] Add a proper auth/login endpoint or integrate with an IdP
+- [ ] Review and tune `DB_POOL_MAX` for your workload

@@ -1,68 +1,81 @@
-'use strict';
-
 const { Router } = require('express');
-const { sequelize } = require('../../data/database');
+const { sequelize } = require('../../database/connection');
 const appConfig = require('../../config/app.config');
+const { sendSuccess } = require('../../utils/response');
 
 const router = Router();
 
 /**
- * @openapi
+ * @swagger
  * /health:
  *   get:
+ *     summary: Health check
  *     tags: [Health]
- *     summary: Service liveness check
- *     security: []
  *     responses:
  *       200:
  *         description: Service is healthy
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:   { type: string, example: ok }
- *                 uptime:   { type: number, example: 42.3 }
- *                 timestamp: { type: string, format: date-time }
- *
- * /health/ready:
- *   get:
- *     tags: [Health]
- *     summary: Service readiness check (includes DB connectivity)
- *     security: []
- *     responses:
- *       200:
- *         description: Service is ready to accept traffic
  *       503:
- *         description: Service is not ready (DB unreachable)
+ *         description: Service is degraded
  */
+router.get('/', async (_req, res) => {
+  const checks = {};
+  let overallStatus = 'healthy';
 
-router.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: appConfig.appName,
-    env: appConfig.env,
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
-});
-
-router.get('/ready', async (req, res) => {
+  // Database connectivity check
   try {
     await sequelize.authenticate();
-    res.json({
-      status: 'ready',
-      database: 'connected',
-      timestamp: new Date().toISOString(),
-    });
+    checks.database = { status: 'up', latencyMs: null };
+    const start = Date.now();
+    await sequelize.query('SELECT 1');
+    checks.database.latencyMs = Date.now() - start;
   } catch (err) {
-    res.status(503).json({
-      status: 'not_ready',
-      database: 'unreachable',
-      error: err.message,
-      timestamp: new Date().toISOString(),
-    });
+    checks.database = { status: 'down', error: err.message };
+    overallStatus = 'degraded';
   }
+
+  // Memory usage
+  const mem = process.memoryUsage();
+  checks.memory = {
+    heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+    heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024),
+    rssMb: Math.round(mem.rss / 1024 / 1024),
+  };
+
+  const payload = {
+    status: overallStatus,
+    service: appConfig.appName,
+    version: appConfig.appVersion,
+    env: appConfig.env,
+    timestamp: new Date().toISOString(),
+    uptime: Math.round(process.uptime()),
+    checks,
+  };
+
+  const statusCode = overallStatus === 'healthy' ? 200 : 503;
+  return res.status(statusCode).json({ success: overallStatus === 'healthy', data: payload });
+});
+
+/**
+ * @swagger
+ * /metrics:
+ *   get:
+ *     summary: Basic application metrics
+ *     tags: [Health]
+ */
+router.get('/metrics', (_req, res) => {
+  const mem = process.memoryUsage();
+  return sendSuccess(res, {
+    uptime: process.uptime(),
+    memoryMb: {
+      heapUsed: Math.round(mem.heapUsed / 1024 / 1024),
+      heapTotal: Math.round(mem.heapTotal / 1024 / 1024),
+      rss: Math.round(mem.rss / 1024 / 1024),
+      external: Math.round(mem.external / 1024 / 1024),
+    },
+    cpu: process.cpuUsage(),
+    pid: process.pid,
+    nodeVersion: process.version,
+  });
 });
 
 module.exports = router;

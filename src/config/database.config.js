@@ -1,44 +1,57 @@
-'use strict';
-
 require('dotenv').config();
 
-const path = require('path');
-
-const dialect = process.env.DB_DIALECT || 'sqlite';
-
-const configs = {
-  sqlite: {
-    dialect: 'sqlite',
-    storage: process.env.DB_STORAGE || path.join(process.cwd(), 'data', 'attendance.db'),
-    logging: process.env.NODE_ENV === 'development' ? console.log : false,
-  },
-
-  postgres: {
-    dialect: 'postgres',
+const databaseConfig = {
+  development: {
+    username: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+    database: process.env.DB_NAME || 'attendance_db',
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT, 10) || 5432,
-    database: process.env.DB_NAME || 'attendance_db',
-    username: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || '',
+    dialect: 'postgres',
+    logging: false,
     pool: {
       max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
       min: parseInt(process.env.DB_POOL_MIN, 10) || 2,
+      acquire: parseInt(process.env.DB_POOL_ACQUIRE, 10) || 30000,
       idle: parseInt(process.env.DB_POOL_IDLE, 10) || 10000,
     },
-    logging: process.env.NODE_ENV === 'development' ? console.log : false,
+  },
+  test: {
+    username: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+    database: process.env.DB_NAME ? `${process.env.DB_NAME}_test` : 'attendance_db_test',
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT, 10) || 5432,
+    dialect: 'postgres',
+    logging: false,
+    pool: {
+      max: 5,
+      min: 1,
+      acquire: 30000,
+      idle: 10000,
+    },
+  },
+  production: {
+    username: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    host: process.env.DB_HOST,
+    port: parseInt(process.env.DB_PORT, 10) || 5432,
+    dialect: 'postgres',
+    logging: false,
     dialectOptions: {
-      ssl: process.env.NODE_ENV === 'production'
-        ? { require: true, rejectUnauthorized: false }
-        : false,
+      ssl: {
+        require: true,
+        rejectUnauthorized: false,
+      },
+    },
+    pool: {
+      max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
+      min: parseInt(process.env.DB_POOL_MIN, 10) || 5,
+      acquire: parseInt(process.env.DB_POOL_ACQUIRE, 10) || 30000,
+      idle: parseInt(process.env.DB_POOL_IDLE, 10) || 10000,
     },
   },
 };
 
-const dbConfig = configs[dialect];
-
-if (!dbConfig) {
-  console.error(`Unsupported DB_DIALECT: "${dialect}". Use "sqlite" or "postgres".`);
-  process.exit(1);
-}
-
-module.exports = dbConfig;
+module.exports = databaseConfig;
