@@ -1,111 +1,69 @@
-'use strict';
-
-const employeeRepository = require('../repositories/employee.repository');
-const logger = require('../config/logger');
+const EmployeeRepository = require('../repositories/employee.repository');
+const { parsePagination, buildPaginationMeta } = require('../utils/pagination');
+const logger = require('../utils/logger');
 
 /**
- * Business-logic layer for employees.
- * Orchestrates repository calls and enforces domain rules.
+ * Business Logic Layer for Employee operations.
+ * Orchestrates repository calls and applies domain rules.
  */
 class EmployeeService {
+  constructor() {
+    this.repository = new EmployeeRepository();
+  }
+
   /**
-   * List employees with pagination and optional filters.
+   * List employees with pagination and filtering.
    */
-  async list(options) {
-    const { employees, total } = await employeeRepository.findAll(options);
-    const { page = 1, limit = 20 } = options;
+  async listEmployees(query) {
+    const { page, limit, offset } = parsePagination(query);
+    const { status, department, search } = query;
+
+    const { rows, total } = await this.repository.findAll({
+      page, limit, offset, status, department, search,
+    });
+
+    logger.info('Listed employees', { count: rows.length, total, page, limit });
+
     return {
-      employees: employees.map((e) => e.toJSON()),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      data: rows,
+      pagination: buildPaginationMeta(total, page, limit),
     };
   }
 
   /**
    * Get a single employee by ID.
-   * Throws 404-style error if not found.
    */
-  async getById(id) {
-    const employee = await employeeRepository.findById(id);
-    if (!employee) {
-      const err = new Error(`Employee with id '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-    return employee.toJSON();
+  async getEmployee(id) {
+    const employee = await this.repository.findById(id);
+    return employee;
   }
 
   /**
    * Create a new employee.
-   * Enforces uniqueness of employee_code and email at the service layer
-   * (database constraints are the final guard).
    */
-  async create(data) {
-    // Check for duplicate employee_code
-    const existingByCode = await employeeRepository.findByCode(data.employee_code);
-    if (existingByCode) {
-      const err = new Error(`Employee code '${data.employee_code}' is already in use`);
-      err.statusCode = 409;
-      throw err;
-    }
-
-    // Check for duplicate email
-    const existingByEmail = await employeeRepository.findByEmail(data.email);
-    if (existingByEmail) {
-      const err = new Error(`Email '${data.email}' is already registered`);
-      err.statusCode = 409;
-      throw err;
-    }
-
-    const employee = await employeeRepository.create(data);
-    logger.info('Employee created', { employeeId: employee.id, code: employee.employeeCode });
-    return employee.toJSON();
+  async createEmployee(data) {
+    const employee = await this.repository.create(data);
+    logger.info('Employee created', { id: employee.id, email: employee.email });
+    return employee;
   }
 
   /**
-   * Update an existing employee.
+   * Update an existing employee's details.
    */
-  async update(id, updates) {
-    // Verify exists
-    const existing = await employeeRepository.findById(id);
-    if (!existing) {
-      const err = new Error(`Employee with id '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-
-    // Check email uniqueness if changing email
-    if (updates.email && updates.email.toLowerCase() !== existing.email) {
-      const duplicate = await employeeRepository.findByEmail(updates.email);
-      if (duplicate && duplicate.id !== id) {
-        const err = new Error(`Email '${updates.email}' is already registered`);
-        err.statusCode = 409;
-        throw err;
-      }
-    }
-
-    const updated = await employeeRepository.update(id, updates);
-    logger.info('Employee updated', { employeeId: id });
-    return updated.toJSON();
+  async updateEmployee(id, data) {
+    const employee = await this.repository.update(id, data);
+    logger.info('Employee updated', { id });
+    return employee;
   }
 
   /**
-   * Soft-delete: deactivate an employee instead of hard-deleting.
+   * Soft-delete an employee.
    */
-  async deactivate(id) {
-    const success = await employeeRepository.deactivate(id);
-    if (!success) {
-      const err = new Error(`Employee with id '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-    logger.info('Employee deactivated', { employeeId: id });
-    return { message: 'Employee deactivated successfully' };
+  async deleteEmployee(id) {
+    const result = await this.repository.delete(id);
+    logger.info('Employee deleted', { id });
+    return result;
   }
 }
 
-module.exports = new EmployeeService();
+module.exports = EmployeeService;

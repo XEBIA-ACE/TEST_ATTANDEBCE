@@ -1,58 +1,60 @@
-'use strict';
-
 const jwt = require('jsonwebtoken');
+const config = require('../../config');
+const { UnauthorizedError, ForbiddenError } = require('../../utils/errors');
 
 /**
- * JWT authentication middleware.
+ * Authentication middleware.
+ * Verifies the Bearer JWT token from the Authorization header.
+ * Attaches decoded user payload to req.user.
  *
- * Expects:  Authorization: Bearer <token>
- *
- * Sets req.user = { id, email, role } on success.
- * Returns 401 on missing/invalid/expired token.
+ * In production, replace the stub token generation with a real
+ * /auth/login endpoint that validates credentials against a users table.
  */
 function authenticate(req, res, next) {
   const authHeader = req.headers['authorization'];
+
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
-      success: false,
-      message: 'Authentication token missing',
-    });
+    return next(new UnauthorizedError('Missing or malformed Authorization header'));
   }
 
   const token = authHeader.slice(7);
+
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = {
-      id: payload.sub,
-      email: payload.email,
-      role: payload.role || 'employee',
-    };
+    const payload = jwt.verify(token, config.jwt.secret);
+    req.user = payload;
     return next();
   } catch (err) {
-    return next(err);
+    if (err.name === 'TokenExpiredError') {
+      return next(new UnauthorizedError('Token has expired'));
+    }
+    return next(new UnauthorizedError('Invalid token'));
   }
 }
 
 /**
- * Role-based access control middleware factory.
+ * Authorization middleware factory.
+ * Restricts access to users with specific roles.
  *
- * Usage:  router.delete('/:id', authenticate, authorize('admin'), handler)
- *
- * @param {...string} roles  - Allowed roles
+ * @param {...string} roles - Allowed role names (e.g., 'admin', 'manager')
  */
 function authorize(...roles) {
   return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: 'Not authenticated' });
+    if (!req.user) return next(new UnauthorizedError());
+
+    if (roles.length && !roles.includes(req.user.role)) {
+      return next(new ForbiddenError('Insufficient permissions'));
     }
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: 'You do not have permission to perform this action',
-      });
-    }
+
     return next();
   };
 }
 
-module.exports = { authenticate, authorize };
+/**
+ * Generate a JWT token (utility for testing / seeding).
+ * In production, this belongs in an auth service with password validation.
+ */
+function generateToken(payload) {
+  return jwt.sign(payload, config.jwt.secret, { expiresIn: config.jwt.expiresIn });
+}
+
+module.exports = { authenticate, authorize, generateToken };

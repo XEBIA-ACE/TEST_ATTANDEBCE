@@ -1,224 +1,179 @@
-'use strict';
-
-const attendanceRepository = require('../repositories/attendance.repository');
-const employeeRepository = require('../repositories/employee.repository');
-const { ATTENDANCE_STATUS } = require('../models/attendance.model');
-const logger = require('../config/logger');
+const AttendanceRepository = require('../repositories/attendance.repository');
+const EmployeeRepository = require('../repositories/employee.repository');
+const { parsePagination, buildPaginationMeta } = require('../utils/pagination');
+const { ATTENDANCE_STATUS, calculateHoursWorked } = require('../models/attendance.model');
+const { ValidationError, ConflictError, NotFoundError } = require('../utils/errors');
+const logger = require('../utils/logger');
 
 /**
- * Business-logic layer for attendance records.
+ * Business Logic Layer for Attendance operations.
+ * Enforces check-in/check-out flow, calculates hours, and computes summaries.
  */
 class AttendanceService {
+  constructor() {
+    this.repository = new AttendanceRepository();
+    this.employeeRepository = new EmployeeRepository();
+  }
+
   /**
-   * List attendance records with pagination and filters.
+   * List attendance records with filters and pagination.
    */
-  async list(options) {
-    const { records, total } = await attendanceRepository.findAll({
-      page: options.page,
-      limit: options.limit,
-      employeeId: options.employee_id,
-      startDate: options.start_date,
-      endDate: options.end_date,
-      status: options.status,
-      department: options.department,
+  async listRecords(query) {
+    const { page, limit, offset } = parsePagination(query);
+    const { employee_id, date_from, date_to, status } = query;
+
+    const { rows, total } = await this.repository.findAll({
+      page, limit, offset, employee_id, date_from, date_to, status,
     });
 
-    const { page = 1, limit = 20 } = options;
     return {
-      records: records.map((r) => r.toJSON()),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      data: rows,
+      pagination: buildPaginationMeta(total, page, limit),
     };
   }
 
   /**
-   * Get a single record by ID.
+   * Get a single attendance record by ID.
    */
-  async getById(id) {
-    const record = await attendanceRepository.findById(id);
-    if (!record) {
-      const err = new Error(`Attendance record '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-    return record.toJSON();
+  async getRecord(id) {
+    return this.repository.findById(id);
   }
 
   /**
-   * Record an employee's check-in for today (or a specified date/time).
+   * Record an employee checking in.
    * Prevents duplicate check-ins on the same day.
    */
-  async checkIn({ employee_id, check_in_time, notes }) {
+  async checkIn(employee_id, { notes, location } = {}) {
     // Verify employee exists and is active
-    const employee = await employeeRepository.findById(employee_id);
-    if (!employee) {
-      const err = new Error(`Employee '${employee_id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-    if (!employee.isActive) {
-      const err = new Error('Cannot record attendance for an inactive employee');
-      err.statusCode = 400;
-      throw err;
+    const employee = await this.employeeRepository.findById(employee_id);
+    if (employee.status !== 'active') {
+      throw new ValidationError('Only active employees can check in');
     }
 
-    const checkInAt = check_in_time ? new Date(check_in_time) : new Date();
-    const dateStr = checkInAt.toISOString().split('T')[0]; // YYYY-MM-DD
+    const today = new Date().toISOString().split('T')[0];
+    const existing = await this.repository.findByEmployeeAndDate(employee_id, today);
 
-    // Check for an existing record on this date
-    const existing = await attendanceRepository.findByEmployeeAndDate(employee_id, dateStr);
     if (existing) {
-      const err = new Error(
-        `Employee already has an attendance record for ${dateStr}. Use check-out or update instead.`
-      );
-      err.statusCode = 409;
-      throw err;
+      if (existing.check_in) {
+        throw new ConflictError('Employee has already checked in today');
+      }
+      // Update existing absent record with a check-in
+      return this.repository.update(existing.id, {
+        check_in: new Date().toISOString(),
+        status: ATTENDANCE_STATUS.PRESENT,
+        notes,
+      });
     }
 
-    // Determine status: if check-in is after 09:30, mark as late
-    const LATE_THRESHOLD_HOUR = 9;
-    const LATE_THRESHOLD_MINUTE = 30;
-    const isLate =
-      checkInAt.getHours() > LATE_THRESHOLD_HOUR ||
-      (checkInAt.getHours() === LATE_THRESHOLD_HOUR &&
-        checkInAt.getMinutes() > LATE_THRESHOLD_MINUTE);
-
-    const status = isLate ? ATTENDANCE_STATUS.LATE : ATTENDANCE_STATUS.PRESENT;
-
-    const record = await attendanceRepository.create({
+    const record = await this.repository.create({
       employee_id,
-      date: dateStr,
-      check_in_time: checkInAt.toISOString(),
-      status,
+      date: today,
+      check_in: new Date().toISOString(),
+      status: ATTENDANCE_STATUS.PRESENT,
       notes: notes || null,
+      location: location || null,
+      total_hours: null,
     });
 
-    logger.info('Employee checked in', {
-      employeeId: employee_id,
-      date: dateStr,
-      checkInTime: checkInAt.toISOString(),
-      status,
-    });
-
-    return record.toJSON();
+    logger.info('Employee checked in', { employee_id, date: today, record_id: record.id });
+    return record;
   }
 
   /**
-   * Record an employee's check-out for today's existing record.
+   * Record an employee checking out.
+   * Calculates total hours worked.
    */
-  async checkOut(recordId, { check_out_time, notes }) {
-    const existing = await attendanceRepository.findById(recordId);
+  async checkOut(employee_id, { notes, location } = {}) {
+    const today = new Date().toISOString().split('T')[0];
+    const existing = await this.repository.findByEmployeeAndDate(employee_id, today);
+
     if (!existing) {
-      const err = new Error(`Attendance record '${recordId}' not found`);
-      err.statusCode = 404;
-      throw err;
+      throw new NotFoundError('No check-in record found for today');
+    }
+    if (!existing.check_in) {
+      throw new ValidationError('Employee has not checked in today');
+    }
+    if (existing.check_out) {
+      throw new ConflictError('Employee has already checked out today');
     }
 
-    if (existing.checkOutTime) {
-      const err = new Error('Employee has already checked out for this record');
-      err.statusCode = 400;
-      throw err;
-    }
+    const checkOutTime = new Date().toISOString();
+    const totalHours = calculateHoursWorked(existing.check_in, checkOutTime);
 
-    const checkOutAt = check_out_time ? new Date(check_out_time) : new Date();
-
-    if (existing.checkInTime && checkOutAt <= new Date(existing.checkInTime)) {
-      const err = new Error('Check-out time must be after check-in time');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    const updates = { check_out_time: checkOutAt.toISOString() };
-    if (notes !== undefined) {
-      updates.notes = notes;
-    }
-
-    const updated = await attendanceRepository.update(recordId, updates);
+    const updated = await this.repository.update(existing.id, {
+      check_out: checkOutTime,
+      total_hours: totalHours,
+      notes: notes || existing.notes,
+      location: location || existing.location,
+    });
 
     logger.info('Employee checked out', {
-      recordId,
-      checkOutTime: checkOutAt.toISOString(),
+      employee_id,
+      date: today,
+      total_hours: totalHours,
     });
 
-    return updated.toJSON();
+    return updated;
   }
 
   /**
-   * Manually create or edit an attendance record (admin use).
+   * Manually create an attendance record (admin use).
    */
-  async create(data) {
-    // Verify employee exists
-    const employee = await employeeRepository.findById(data.employee_id);
-    if (!employee) {
-      const err = new Error(`Employee '${data.employee_id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
+  async createRecord(data) {
+    // Validate employee exists
+    await this.employeeRepository.findById(data.employee_id);
 
-    // Check for duplicates
-    const dateStr = new Date(data.date).toISOString().split('T')[0];
-    const existing = await attendanceRepository.findByEmployeeAndDate(data.employee_id, dateStr);
-    if (existing) {
-      const err = new Error(`Attendance record already exists for this employee on ${dateStr}`);
-      err.statusCode = 409;
-      throw err;
-    }
+    const totalHours =
+      data.check_in && data.check_out
+        ? calculateHoursWorked(data.check_in, data.check_out)
+        : null;
 
-    const record = await attendanceRepository.create({ ...data, date: dateStr });
-    logger.info('Attendance record created manually', { recordId: record.id });
-    return record.toJSON();
+    const record = await this.repository.create({ ...data, total_hours: totalHours });
+    logger.info('Attendance record created manually', { id: record.id });
+    return record;
   }
 
   /**
    * Update an attendance record (admin use).
    */
-  async update(id, updates) {
-    const existing = await attendanceRepository.findById(id);
-    if (!existing) {
-      const err = new Error(`Attendance record '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
+  async updateRecord(id, data) {
+    const existing = await this.repository.findById(id);
 
-    const record = await attendanceRepository.update(id, updates);
-    logger.info('Attendance record updated', { recordId: id });
-    return record.toJSON();
+    const checkIn = data.check_in ?? existing.check_in;
+    const checkOut = data.check_out ?? existing.check_out;
+    const totalHours = calculateHoursWorked(checkIn, checkOut);
+
+    const updated = await this.repository.update(id, { ...data, total_hours: totalHours });
+    logger.info('Attendance record updated', { id });
+    return updated;
   }
 
   /**
    * Delete an attendance record.
    */
-  async delete(id) {
-    const deleted = await attendanceRepository.delete(id);
-    if (!deleted) {
-      const err = new Error(`Attendance record '${id}' not found`);
-      err.statusCode = 404;
-      throw err;
-    }
-    logger.info('Attendance record deleted', { recordId: id });
-    return { message: 'Attendance record deleted successfully' };
+  async deleteRecord(id) {
+    const result = await this.repository.delete(id);
+    logger.info('Attendance record deleted', { id });
+    return result;
   }
 
   /**
-   * Generate a summary report for a date range.
+   * Get attendance summary for an employee over a date range.
    */
-  async getSummaryReport(options) {
-    const rows = await attendanceRepository.getSummaryReport({
-      startDate: options.start_date,
-      endDate: options.end_date,
-      employeeId: options.employee_id,
-      department: options.department,
-    });
+  async getSummary(employee_id, date_from, date_to) {
+    // Validate employee exists
+    const employee = await this.employeeRepository.findById(employee_id);
 
+    const summary = await this.repository.getSummary(employee_id, date_from, date_to);
     return {
-      period: { start_date: options.start_date, end_date: options.end_date },
-      results: rows,
+      ...summary,
+      employee: {
+        id: employee.id,
+        name: `${employee.first_name} ${employee.last_name}`,
+        employee_code: employee.employee_code,
+      },
     };
   }
 }
 
-module.exports = new AttendanceService();
+module.exports = AttendanceService;

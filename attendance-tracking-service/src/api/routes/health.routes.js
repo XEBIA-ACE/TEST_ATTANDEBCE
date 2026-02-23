@@ -1,65 +1,60 @@
-'use strict';
-
 const { Router } = require('express');
-const { pool } = require('../../config/database');
+const { getDatabase } = require('../../config/database');
+const config = require('../../config');
 
 const router = Router();
 
 /**
- * @swagger
- * tags:
- *   - name: Health
- *     description: Service health and readiness probes
- */
-
-/**
- * @swagger
+ * @openapi
  * /health:
  *   get:
- *     summary: Liveness probe – confirms the process is running
+ *     summary: Basic liveness check
  *     tags: [Health]
  *     security: []
  *     responses:
  *       200:
- *         description: Service is alive
+ *         description: Service is running
  */
-router.get('/health', (_req, res) => {
-  res.status(200).json({
+router.get('/', (req, res) => {
+  res.json({
     status: 'ok',
+    service: config.appName,
+    version: process.env.npm_package_version || '1.0.0',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development',
   });
 });
 
 /**
- * @swagger
+ * @openapi
  * /health/ready:
  *   get:
- *     summary: Readiness probe – confirms the service can accept traffic (DB reachable)
+ *     summary: Readiness check — verifies DB connectivity
  *     tags: [Health]
  *     security: []
  *     responses:
  *       200:
  *         description: Service is ready
  *       503:
- *         description: Service is not ready (e.g. DB unavailable)
+ *         description: Service is not ready (DB unreachable)
  */
-router.get('/health/ready', async (_req, res) => {
+router.get('/ready', async (req, res) => {
   try {
-    const client = await pool.connect();
-    await client.query('SELECT 1');
-    client.release();
+    const db = getDatabase();
+    await db.raw('SELECT 1');
 
-    res.status(200).json({
+    res.json({
       status: 'ready',
-      database: 'connected',
+      checks: {
+        database: 'ok',
+      },
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
     res.status(503).json({
-      status: 'not ready',
-      database: 'disconnected',
+      status: 'not_ready',
+      checks: {
+        database: 'failed',
+      },
       error: err.message,
       timestamp: new Date().toISOString(),
     });
@@ -67,27 +62,28 @@ router.get('/health/ready', async (_req, res) => {
 });
 
 /**
- * @swagger
- * /metrics:
+ * @openapi
+ * /health/metrics:
  *   get:
- *     summary: Basic process metrics
+ *     summary: Basic runtime metrics
  *     tags: [Health]
  *     security: []
  *     responses:
  *       200:
- *         description: Process memory and uptime stats
+ *         description: Runtime metrics
  */
-router.get('/metrics', (_req, res) => {
-  const mem = process.memoryUsage();
-  res.status(200).json({
+router.get('/metrics', (req, res) => {
+  const memUsage = process.memoryUsage();
+  res.json({
     uptime_seconds: process.uptime(),
     memory: {
-      rss_mb: (mem.rss / 1024 / 1024).toFixed(2),
-      heap_used_mb: (mem.heapUsed / 1024 / 1024).toFixed(2),
-      heap_total_mb: (mem.heapTotal / 1024 / 1024).toFixed(2),
+      rss_mb: (memUsage.rss / 1024 / 1024).toFixed(2),
+      heap_used_mb: (memUsage.heapUsed / 1024 / 1024).toFixed(2),
+      heap_total_mb: (memUsage.heapTotal / 1024 / 1024).toFixed(2),
     },
     node_version: process.version,
-    pid: process.pid,
+    env: config.env,
+    timestamp: new Date().toISOString(),
   });
 });
 

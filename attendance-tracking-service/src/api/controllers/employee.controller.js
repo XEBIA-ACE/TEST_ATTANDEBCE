@@ -1,56 +1,55 @@
-'use strict';
+const EmployeeService = require('../../services/employee.service');
 
-const employeeService = require('../../services/employee.service');
+const service = new EmployeeService();
 
 /**
- * Employee CRUD controller.
- * All methods are thin — they delegate entirely to the service layer.
+ * Employee controller — thin layer that translates HTTP requests
+ * into service calls and formats responses.
  */
-class EmployeeController {
-  async list(req, res, next) {
-    try {
-      const result = await employeeService.list(req.query);
-      return res.status(200).json({ success: true, data: result });
-    } catch (err) {
-      return next(err);
-    }
-  }
 
-  async getById(req, res, next) {
-    try {
-      const employee = await employeeService.getById(req.params.id);
-      return res.status(200).json({ success: true, data: employee });
-    } catch (err) {
-      return next(err);
-    }
-  }
-
-  async create(req, res, next) {
-    try {
-      const employee = await employeeService.create(req.body);
-      return res.status(201).json({ success: true, data: employee });
-    } catch (err) {
-      return next(err);
-    }
-  }
-
-  async update(req, res, next) {
-    try {
-      const employee = await employeeService.update(req.params.id, req.body);
-      return res.status(200).json({ success: true, data: employee });
-    } catch (err) {
-      return next(err);
-    }
-  }
-
-  async deactivate(req, res, next) {
-    try {
-      const result = await employeeService.deactivate(req.params.id);
-      return res.status(200).json({ success: true, data: result });
-    } catch (err) {
-      return next(err);
-    }
+async function listEmployees(req, res, next) {
+  try {
+    const result = await service.listEmployees(req.query);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    next(err);
   }
 }
 
-module.exports = new EmployeeController();
+async function getEmployee(req, res, next) {
+  try {
+    const employee = await service.getEmployee(req.params.id);
+    res.json({ success: true, data: employee });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function createEmployee(req, res, next) {
+  try {
+    const employee = await service.createEmployee(req.body);
+    res.status(201).json({ success: true, data: employee });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateEmployee(req, res, next) {
+  try {
+    const employee = await service.updateEmployee(req.params.id, req.body);
+    res.json({ success: true, data: employee });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function deleteEmployee(req, res, next) {
+  try {
+    const result = await service.deleteEmployee(req.params.id);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee };

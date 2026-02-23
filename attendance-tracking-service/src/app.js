@@ -1,89 +1,113 @@
-'use strict';
-
 require('dotenv').config();
 
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 
+const config = require('./config');
+const logger = require('./utils/logger');
+const { runMigrations, closeDatabase } = require('./config/database');
 const swaggerSpec = require('./config/swagger');
-const { requestId, requestLogger } = require('./api/middleware/requestLogger.middleware');
-const { errorHandler, notFoundHandler } = require('./api/middleware/error.middleware');
 
-const healthRoutes = require('./api/routes/health.routes');
 const employeeRoutes = require('./api/routes/employee.routes');
 const attendanceRoutes = require('./api/routes/attendance.routes');
+const healthRoutes = require('./api/routes/health.routes');
+const requestLogger = require('./api/middleware/requestLogger.middleware');
+const errorHandler = require('./api/middleware/errorHandler.middleware');
 
 const app = express();
 
-// ─── Security headers ─────────────────────────────────────────────────────────
+// ─── Security ────────────────────────────────────────────────────────────────
 app.use(helmet());
-
-// ─── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-
 app.use(
   cors({
-    origin: allowedOrigins.length ? allowedOrigins : '*',
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id'],
-    exposedHeaders: ['X-Request-Id'],
-    credentials: true,
+    origin: config.cors.origins,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
-
-// ─── Body parsers ─────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.maxRequests,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, message: 'Too many requests, please try again later' },
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMITED', message: 'Too many requests — please try again later' },
+  },
 });
-app.use(limiter);
+app.use('/api/', limiter);
 
-// ─── Request logging ──────────────────────────────────────────────────────────
-app.use(requestId);
+// ─── Request processing ───────────────────────────────────────────────────────
+app.use(compression());
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
 app.use(requestLogger);
 
-// ─── Trust proxy (for rate-limiter IP detection behind load balancers) ────────
-app.set('trust proxy', 1);
-
 // ─── API Documentation ────────────────────────────────────────────────────────
-app.use(
-  '/api-docs',
-  swaggerUi.serve,
-  swaggerUi.setup(swaggerSpec, {
-    customSiteTitle: 'Attendance Tracking API',
-    swaggerOptions: { persistAuthorization: true },
-  })
-);
-
-app.get('/api-docs.json', (_req, res) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.send(swaggerSpec);
-});
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customSiteTitle: 'Attendance Tracking API',
+}));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
-const apiPrefix = process.env.API_PREFIX || '/api/v1';
+const API_PREFIX = '/api/v1';
+app.use(`${API_PREFIX}/health`, healthRoutes);
+app.use(`${API_PREFIX}/employees`, employeeRoutes);
+app.use(`${API_PREFIX}/attendance`, attendanceRoutes);
 
-// Health / metrics are available without the API prefix (for k8s probes)
-app.use('/', healthRoutes);
+// ─── 404 handler ─────────────────────────────────────────────────────────────
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: { code: 'NOT_FOUND', message: `Route ${req.method} ${req.path} not found` },
+  });
+});
 
-app.use(`${apiPrefix}/employees`, employeeRoutes);
-app.use(`${apiPrefix}/attendance`, attendanceRoutes);
-
-// ─── 404 & error handlers ─────────────────────────────────────────────────────
-app.use(notFoundHandler);
+// ─── Global error handler ─────────────────────────────────────────────────────
 app.use(errorHandler);
 
-module.exports = app;
+// ─── Server startup ───────────────────────────────────────────────────────────
+async function start() {
+  try {
+    // Run pending DB migrations before accepting traffic
+    await runMigrations();
+
+    const server = app.listen(config.port, () => {
+      logger.info(`${config.appName} started`, {
+        env: config.env,
+        port: config.port,
+        docs: `http://localhost:${config.port}/api-docs`,
+      });
+    });
+
+    // Graceful shutdown handlers
+    const shutdown = async (signal) => {
+      logger.info(`${signal} received — shutting down gracefully`);
+      server.close(async () => {
+        await closeDatabase();
+        logger.info('Server closed');
+        process.exit(0);
+      });
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    return server;
+  } catch (err) {
+    logger.error('Failed to start server', { error: err.message, stack: err.stack });
+    process.exit(1);
+  }
+}
+
+// Only start the server when this file is run directly (not during tests)
+if (require.main === module) {
+  start();
+}
+
+module.exports = { app, start };

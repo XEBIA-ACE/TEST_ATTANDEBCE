@@ -1,200 +1,140 @@
-'use strict';
+const { v4: uuidv4 } = require('uuid');
+const { getDatabase } = require('../config/database');
+const { NotFoundError, ConflictError } = require('../utils/errors');
 
-const { query } = require('../config/database');
-const { AttendanceRecord } = require('../models/attendance.model');
+const TABLE = 'attendance_records';
 
 /**
- * Data-access layer for attendance records.
+ * Data Access Layer for Attendance records.
  */
 class AttendanceRepository {
-  /**
-   * Paginated list with optional filters, joined with employee name for convenience.
-   */
-  async findAll({ page = 1, limit = 20, employeeId, startDate, endDate, status, department } = {}) {
-    const params = [];
-    const conditions = [];
-
-    if (employeeId) {
-      params.push(employeeId);
-      conditions.push(`ar.employee_id = $${params.length}`);
-    }
-    if (startDate) {
-      params.push(startDate);
-      conditions.push(`ar.date >= $${params.length}`);
-    }
-    if (endDate) {
-      params.push(endDate);
-      conditions.push(`ar.date <= $${params.length}`);
-    }
-    if (status) {
-      params.push(status);
-      conditions.push(`ar.status = $${params.length}`);
-    }
-    if (department) {
-      params.push(department);
-      conditions.push(`e.department = $${params.length}`);
-    }
-
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    const countResult = await query(
-      `SELECT COUNT(*)
-       FROM attendance_records ar
-       JOIN employees e ON e.id = ar.employee_id
-       ${where}`,
-      params
-    );
-    const total = parseInt(countResult.rows[0].count, 10);
-
-    const offset = (page - 1) * limit;
-    params.push(limit, offset);
-
-    const result = await query(
-      `SELECT ar.*, e.employee_code, e.first_name, e.last_name, e.department
-       FROM attendance_records ar
-       JOIN employees e ON e.id = ar.employee_id
-       ${where}
-       ORDER BY ar.date DESC, ar.check_in_time DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
-    );
-
-    return {
-      records: result.rows.map(AttendanceRecord.fromRow),
-      total,
-    };
+  constructor() {
+    this.db = getDatabase();
   }
 
   /**
-   * Find a single record by ID.
+   * Find attendance records with filters and pagination.
+   */
+  async findAll({ page = 1, limit = 20, offset = 0, employee_id, date_from, date_to, status } = {}) {
+    let query = this.db(TABLE).select(`${TABLE}.*`,
+      this.db.raw("employees.first_name || ' ' || employees.last_name as employee_name"),
+      'employees.employee_code'
+    ).join('employees', `${TABLE}.employee_id`, 'employees.id');
+
+    if (employee_id) query = query.where(`${TABLE}.employee_id`, employee_id);
+    if (status) query = query.where(`${TABLE}.status`, status);
+    if (date_from) query = query.where(`${TABLE}.date`, '>=', date_from);
+    if (date_to) query = query.where(`${TABLE}.date`, '<=', date_to);
+
+    const countQuery = query.clone().clearSelect().count(`${TABLE}.id as count`).first();
+    const [{ count }, rows] = await Promise.all([
+      countQuery,
+      query.clone().orderBy(`${TABLE}.date`, 'desc').limit(limit).offset(offset),
+    ]);
+
+    return { rows, total: parseInt(count) };
+  }
+
+  /**
+   * Find a single attendance record by ID.
    */
   async findById(id) {
-    const result = await query(
-      `SELECT ar.*, e.employee_code, e.first_name, e.last_name, e.department
-       FROM attendance_records ar
-       JOIN employees e ON e.id = ar.employee_id
-       WHERE ar.id = $1`,
-      [id]
-    );
-    return result.rows.length ? AttendanceRecord.fromRow(result.rows[0]) : null;
+    const record = await this.db(TABLE)
+      .select(`${TABLE}.*`,
+        this.db.raw("employees.first_name || ' ' || employees.last_name as employee_name"),
+        'employees.employee_code'
+      )
+      .join('employees', `${TABLE}.employee_id`, 'employees.id')
+      .where(`${TABLE}.id`, id)
+      .first();
+
+    if (!record) throw new NotFoundError('Attendance record');
+    return record;
   }
 
   /**
-   * Find today's record for an employee (used during check-in/out).
+   * Find today's attendance record for an employee.
    */
-  async findByEmployeeAndDate(employeeId, date) {
-    const result = await query(
-      `SELECT ar.*, e.employee_code, e.first_name, e.last_name, e.department
-       FROM attendance_records ar
-       JOIN employees e ON e.id = ar.employee_id
-       WHERE ar.employee_id = $1 AND ar.date = $2`,
-      [employeeId, date]
-    );
-    return result.rows.length ? AttendanceRecord.fromRow(result.rows[0]) : null;
+  async findTodayRecord(employee_id) {
+    const today = new Date().toISOString().split('T')[0];
+    return this.db(TABLE).where({ employee_id, date: today }).first();
+  }
+
+  /**
+   * Find attendance record for a specific employee and date.
+   */
+  async findByEmployeeAndDate(employee_id, date) {
+    return this.db(TABLE).where({ employee_id, date }).first();
   }
 
   /**
    * Create a new attendance record.
    */
   async create(data) {
-    const { employee_id, date, check_in_time, status, notes } = data;
-    const result = await query(
-      `INSERT INTO attendance_records (employee_id, date, check_in_time, status, notes)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [employee_id, date, check_in_time, status, notes]
-    );
-    return this.findById(result.rows[0].id);
-  }
-
-  /**
-   * Partial update – only sets provided fields.
-   */
-  async update(id, updates) {
-    const allowed = ['check_in_time', 'check_out_time', 'status', 'notes'];
-    const setClauses = [];
-    const params = [];
-
-    for (const key of allowed) {
-      if (updates[key] !== undefined) {
-        params.push(updates[key]);
-        setClauses.push(`${key} = $${params.length}`);
-      }
+    const existing = await this.findByEmployeeAndDate(data.employee_id, data.date);
+    if (existing) {
+      throw new ConflictError(`Attendance record for employee on ${data.date} already exists`);
     }
 
-    if (setClauses.length === 0) {
-      return this.findById(id);
-    }
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const record = { id, ...data, created_at: now, updated_at: now };
 
-    params.push(id);
-    await query(
-      `UPDATE attendance_records SET ${setClauses.join(', ')} WHERE id = $${params.length}`,
-      params
-    );
+    await this.db(TABLE).insert(record);
     return this.findById(id);
   }
 
   /**
-   * Delete a record by ID.
+   * Update an attendance record.
    */
-  async delete(id) {
-    const result = await query(
-      'DELETE FROM attendance_records WHERE id = $1 RETURNING id',
-      [id]
-    );
-    return result.rows.length > 0;
+  async update(id, data) {
+    await this.findById(id); // Ensures record exists
+    await this.db(TABLE)
+      .where({ id })
+      .update({ ...data, updated_at: new Date().toISOString() });
+    return this.findById(id);
   }
 
   /**
-   * Summary/report: aggregate hours and counts per employee for a date range.
+   * Delete an attendance record permanently.
    */
-  async getSummaryReport({ startDate, endDate, department, employeeId } = {}) {
-    const params = [];
-    const conditions = [];
+  async delete(id) {
+    await this.findById(id);
+    await this.db(TABLE).where({ id }).delete();
+    return { id, deleted: true };
+  }
 
-    if (startDate) {
-      params.push(startDate);
-      conditions.push(`ar.date >= $${params.length}`);
-    }
-    if (endDate) {
-      params.push(endDate);
-      conditions.push(`ar.date <= $${params.length}`);
-    }
-    if (department) {
-      params.push(department);
-      conditions.push(`e.department = $${params.length}`);
-    }
-    if (employeeId) {
-      params.push(employeeId);
-      conditions.push(`ar.employee_id = $${params.length}`);
+  /**
+   * Aggregate attendance summary for an employee over a date range.
+   */
+  async getSummary(employee_id, date_from, date_to) {
+    const rows = await this.db(TABLE)
+      .where({ employee_id })
+      .where('date', '>=', date_from)
+      .where('date', '<=', date_to)
+      .select('status')
+      .count('id as count')
+      .sum('total_hours as total_hours')
+      .groupBy('status');
+
+    const summary = {
+      employee_id,
+      date_from,
+      date_to,
+      total_days: 0,
+      total_hours: 0,
+      by_status: {},
+    };
+
+    for (const row of rows) {
+      summary.by_status[row.status] = parseInt(row.count);
+      summary.total_days += parseInt(row.count);
+      summary.total_hours += parseFloat(row.total_hours || 0);
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    const result = await query(
-      `SELECT
-         e.id            AS employee_id,
-         e.employee_code,
-         e.first_name,
-         e.last_name,
-         e.department,
-         COUNT(*)                                                    AS total_days,
-         SUM(CASE WHEN ar.status = 'present' THEN 1 ELSE 0 END)     AS present_days,
-         SUM(CASE WHEN ar.status = 'absent'  THEN 1 ELSE 0 END)     AS absent_days,
-         SUM(CASE WHEN ar.status = 'late'    THEN 1 ELSE 0 END)     AS late_days,
-         SUM(CASE WHEN ar.status = 'half_day' THEN 1 ELSE 0 END)    AS half_days,
-         ROUND(SUM(COALESCE(ar.total_hours, 0))::numeric, 2)        AS total_hours,
-         ROUND(AVG(NULLIF(ar.total_hours, 0))::numeric, 2)          AS avg_hours_per_day
-       FROM attendance_records ar
-       JOIN employees e ON e.id = ar.employee_id
-       ${where}
-       GROUP BY e.id, e.employee_code, e.first_name, e.last_name, e.department
-       ORDER BY e.last_name, e.first_name`,
-      params
-    );
-
-    return result.rows;
+    summary.total_hours = parseFloat(summary.total_hours.toFixed(2));
+    return summary;
   }
 }
 
-module.exports = new AttendanceRepository();
+module.exports = AttendanceRepository;

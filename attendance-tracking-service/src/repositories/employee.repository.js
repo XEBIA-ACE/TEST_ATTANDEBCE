@@ -1,171 +1,120 @@
-'use strict';
+const { v4: uuidv4 } = require('uuid');
+const { getDatabase } = require('../config/database');
+const { NotFoundError, ConflictError } = require('../utils/errors');
 
-const { query } = require('../config/database');
-const Employee = require('../models/employee.model');
+const TABLE = 'employees';
 
 /**
- * Data-access layer for employees.
- * All SQL lives here; no SQL in services or controllers.
+ * Data Access Layer for Employee records.
+ * All raw DB interactions are encapsulated here.
  */
 class EmployeeRepository {
-  /**
-   * Retrieve a paginated, filterable list of employees.
-   * @param {{ page: number, limit: number, department?: string, isActive?: boolean, search?: string }} options
-   * @returns {Promise<{ employees: Employee[], total: number }>}
-   */
-  async findAll({ page = 1, limit = 20, department, isActive, search } = {}) {
-    const params = [];
-    const conditions = [];
-
-    if (department) {
-      params.push(department);
-      conditions.push(`department = $${params.length}`);
-    }
-
-    if (isActive !== undefined) {
-      params.push(isActive);
-      conditions.push(`is_active = $${params.length}`);
-    }
-
-    if (search) {
-      params.push(`%${search}%`);
-      conditions.push(
-        `(first_name ILIKE $${params.length} OR last_name ILIKE $${params.length} OR employee_code ILIKE $${params.length} OR email ILIKE $${params.length})`
-      );
-    }
-
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // Count total for pagination metadata
-    const countResult = await query(
-      `SELECT COUNT(*) FROM employees ${where}`,
-      params
-    );
-    const total = parseInt(countResult.rows[0].count, 10);
-
-    // Fetch page
-    const offset = (page - 1) * limit;
-    params.push(limit, offset);
-    const result = await query(
-      `SELECT * FROM employees ${where}
-       ORDER BY created_at DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
-    );
-
-    return {
-      employees: result.rows.map(Employee.fromRow),
-      total,
-    };
+  constructor() {
+    this.db = getDatabase();
   }
 
   /**
-   * Find an employee by primary key.
-   * @param {string} id - UUID
-   * @returns {Promise<Employee|null>}
+   * Find all employees with optional filters and pagination.
+   */
+  async findAll({ page = 1, limit = 20, offset = 0, status, department, search } = {}) {
+    let query = this.db(TABLE).whereNull('deleted_at');
+
+    if (status) query = query.where('status', status);
+    if (department) query = query.where('department', department);
+    if (search) {
+      query = query.where((builder) => {
+        builder
+          .whereILike('first_name', `%${search}%`)
+          .orWhereILike('last_name', `%${search}%`)
+          .orWhereILike('email', `%${search}%`)
+          .orWhereILike('employee_code', `%${search}%`);
+      });
+    }
+
+    const countQuery = query.clone().count('id as count').first();
+    const [{ count }, rows] = await Promise.all([
+      countQuery,
+      query.clone().orderBy('last_name', 'asc').limit(limit).offset(offset),
+    ]);
+
+    return { rows, total: parseInt(count) };
+  }
+
+  /**
+   * Find a single employee by ID. Throws NotFoundError if missing.
    */
   async findById(id) {
-    const result = await query('SELECT * FROM employees WHERE id = $1', [id]);
-    return result.rows.length ? Employee.fromRow(result.rows[0]) : null;
+    const employee = await this.db(TABLE).where({ id }).whereNull('deleted_at').first();
+    if (!employee) throw new NotFoundError('Employee');
+    return employee;
   }
 
   /**
-   * Find an employee by unique employee_code.
-   * @param {string} code
-   * @returns {Promise<Employee|null>}
-   */
-  async findByCode(code) {
-    const result = await query(
-      'SELECT * FROM employees WHERE employee_code = $1',
-      [code]
-    );
-    return result.rows.length ? Employee.fromRow(result.rows[0]) : null;
-  }
-
-  /**
-   * Find an employee by email.
-   * @param {string} email
-   * @returns {Promise<Employee|null>}
+   * Find a single employee by email (case-insensitive).
    */
   async findByEmail(email) {
-    const result = await query(
-      'SELECT * FROM employees WHERE email = $1',
-      [email.toLowerCase()]
-    );
-    return result.rows.length ? Employee.fromRow(result.rows[0]) : null;
+    return this.db(TABLE).whereRaw('LOWER(email) = ?', [email.toLowerCase()]).whereNull('deleted_at').first();
   }
 
   /**
-   * Insert a new employee row.
-   * @param {{ employee_code, first_name, last_name, email, department, position, hire_date }} data
-   * @returns {Promise<Employee>}
+   * Find a single employee by employee_code.
+   */
+  async findByCode(employee_code) {
+    return this.db(TABLE).where({ employee_code }).whereNull('deleted_at').first();
+  }
+
+  /**
+   * Create a new employee record.
    */
   async create(data) {
-    const { employee_code, first_name, last_name, email, department, position, hire_date } = data;
-    const result = await query(
-      `INSERT INTO employees (employee_code, first_name, last_name, email, department, position, hire_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [employee_code, first_name, last_name, email.toLowerCase(), department, position, hire_date]
-    );
-    return Employee.fromRow(result.rows[0]);
+    const existing = await this.findByEmail(data.email);
+    if (existing) throw new ConflictError(`Employee with email '${data.email}' already exists`);
+
+    const codeExists = await this.findByCode(data.employee_code);
+    if (codeExists) throw new ConflictError(`Employee code '${data.employee_code}' is already taken`);
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    const record = {
+      id,
+      ...data,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await this.db(TABLE).insert(record);
+    return this.findById(id);
   }
 
   /**
-   * Update an existing employee; only provided fields are changed.
-   * @param {string} id
-   * @param {Object} updates
-   * @returns {Promise<Employee|null>}
+   * Update an existing employee record by ID.
    */
-  async update(id, updates) {
-    const allowed = ['first_name', 'last_name', 'email', 'department', 'position', 'hire_date', 'is_active'];
-    const setClauses = [];
-    const params = [];
+  async update(id, data) {
+    await this.findById(id); // Ensures record exists
 
-    for (const key of allowed) {
-      if (updates[key] !== undefined) {
-        params.push(key === 'email' ? updates[key].toLowerCase() : updates[key]);
-        setClauses.push(`${key} = $${params.length}`);
+    if (data.email) {
+      const existing = await this.findByEmail(data.email);
+      if (existing && existing.id !== id) {
+        throw new ConflictError(`Email '${data.email}' is already in use`);
       }
     }
 
-    if (setClauses.length === 0) {
-      return this.findById(id);
-    }
+    await this.db(TABLE)
+      .where({ id })
+      .update({ ...data, updated_at: new Date().toISOString() });
 
-    params.push(id);
-    const result = await query(
-      `UPDATE employees SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING *`,
-      params
-    );
-    return result.rows.length ? Employee.fromRow(result.rows[0]) : null;
+    return this.findById(id);
   }
 
   /**
-   * Soft-delete: mark employee as inactive.
-   * @param {string} id
-   * @returns {Promise<boolean>}
-   */
-  async deactivate(id) {
-    const result = await query(
-      'UPDATE employees SET is_active = FALSE WHERE id = $1 RETURNING id',
-      [id]
-    );
-    return result.rows.length > 0;
-  }
-
-  /**
-   * Hard-delete (use with caution; cascades to attendance_records).
-   * @param {string} id
-   * @returns {Promise<boolean>}
+   * Soft-delete an employee by setting deleted_at timestamp.
    */
   async delete(id) {
-    const result = await query(
-      'DELETE FROM employees WHERE id = $1 RETURNING id',
-      [id]
-    );
-    return result.rows.length > 0;
+    await this.findById(id); // Ensures record exists
+    await this.db(TABLE).where({ id }).update({ deleted_at: new Date().toISOString() });
+    return { id, deleted: true };
   }
 }
 
-module.exports = new EmployeeRepository();
+module.exports = EmployeeRepository;

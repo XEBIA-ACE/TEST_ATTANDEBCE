@@ -1,57 +1,56 @@
-'use strict';
-
 const { Router } = require('express');
 const controller = require('../controllers/attendance.controller');
 const { validate } = require('../middleware/validation.middleware');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 const {
-  checkInSchema,
-  checkOutSchema,
   createAttendanceSchema,
   updateAttendanceSchema,
-  listAttendanceSchema,
-  reportQuerySchema,
-} = require('../../validators/attendance.validator');
+  attendanceQuerySchema,
+  checkInSchema,
+  checkOutSchema,
+} = require('../../models/attendance.model');
 
 const router = Router();
 
 /**
- * @swagger
- * tags:
- *   - name: Attendance
- *     description: Attendance record management
- */
-
-/**
- * @swagger
+ * @openapi
  * /attendance:
  *   get:
  *     summary: List attendance records
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: page
- *         schema: { type: integer, default: 1 }
- *       - in: query
- *         name: limit
- *         schema: { type: integer, default: 20 }
- *       - in: query
  *         name: employee_id
- *         schema: { type: string, format: uuid }
+ *         schema:
+ *           type: string
+ *           format: uuid
  *       - in: query
- *         name: start_date
- *         schema: { type: string, format: date }
+ *         name: date_from
+ *         schema:
+ *           type: string
+ *           format: date
+ *         example: "2024-02-01"
  *       - in: query
- *         name: end_date
- *         schema: { type: string, format: date }
+ *         name: date_to
+ *         schema:
+ *           type: string
+ *           format: date
+ *         example: "2024-02-29"
  *       - in: query
  *         name: status
- *         schema: { type: string, enum: [present, absent, late, half_day, holiday, leave] }
+ *         schema:
+ *           type: string
+ *           enum: [present, absent, late, half_day, on_leave, holiday]
  *       - in: query
- *         name: department
- *         schema: { type: string }
+ *         name: page
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
  *     responses:
  *       200:
  *         description: Paginated attendance records
@@ -59,73 +58,41 @@ const router = Router();
 router.get(
   '/',
   authenticate,
-  validate(listAttendanceSchema, 'query'),
-  controller.list.bind(controller)
+  validate(attendanceQuerySchema, 'query'),
+  controller.listRecords
 );
 
 /**
- * @swagger
- * /attendance/report:
- *   get:
- *     summary: Get an attendance summary report
- *     tags: [Attendance]
- *     security:
- *       - BearerAuth: []
- *     parameters:
- *       - in: query
- *         name: start_date
- *         required: true
- *         schema: { type: string, format: date }
- *       - in: query
- *         name: end_date
- *         required: true
- *         schema: { type: string, format: date }
- *       - in: query
- *         name: department
- *         schema: { type: string }
- *       - in: query
- *         name: employee_id
- *         schema: { type: string, format: uuid }
- *     responses:
- *       200:
- *         description: Summary report per employee
- */
-router.get(
-  '/report',
-  authenticate,
-  validate(reportQuerySchema, 'query'),
-  controller.getSummaryReport.bind(controller)
-);
-
-/**
- * @swagger
+ * @openapi
  * /attendance/{id}:
  *   get:
  *     summary: Get a single attendance record
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string, format: uuid }
+ *         schema:
+ *           type: string
+ *           format: uuid
  *     responses:
  *       200:
- *         description: Attendance record
+ *         description: Attendance record details
  *       404:
- *         description: Not found
+ *         description: Record not found
  */
-router.get('/:id', authenticate, controller.getById.bind(controller));
+router.get('/:id', authenticate, controller.getRecord);
 
 /**
- * @swagger
+ * @openapi
  * /attendance/check-in:
  *   post:
- *     summary: Record a check-in for an employee
+ *     summary: Record employee check-in
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -134,102 +101,178 @@ router.get('/:id', authenticate, controller.getById.bind(controller));
  *             type: object
  *             required: [employee_id]
  *             properties:
- *               employee_id:    { type: string, format: uuid }
- *               check_in_time:  { type: string, format: date-time }
- *               notes:          { type: string }
+ *               employee_id:
+ *                 type: string
+ *                 format: uuid
+ *               notes:
+ *                 type: string
+ *               location:
+ *                 type: string
  *     responses:
  *       201:
- *         description: Attendance record created
+ *         description: Check-in recorded
  *       409:
  *         description: Already checked in today
  */
-router.post(
-  '/check-in',
-  authenticate,
-  validate(checkInSchema),
-  controller.checkIn.bind(controller)
-);
+router.post('/check-in', authenticate, validate(checkInSchema), controller.checkIn);
 
 /**
- * @swagger
- * /attendance/{id}/check-out:
- *   patch:
- *     summary: Record a check-out for an existing attendance record
+ * @openapi
+ * /attendance/check-out:
+ *   post:
+ *     summary: Record employee check-out
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string, format: uuid }
+ *       - bearerAuth: []
  *     requestBody:
+ *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
+ *             required: [employee_id]
  *             properties:
- *               check_out_time: { type: string, format: date-time }
- *               notes:          { type: string }
+ *               employee_id:
+ *                 type: string
+ *                 format: uuid
+ *               notes:
+ *                 type: string
+ *               location:
+ *                 type: string
  *     responses:
  *       200:
- *         description: Updated with check-out time
+ *         description: Check-out recorded with total hours
+ *       404:
+ *         description: No check-in found for today
  */
-router.patch(
-  '/:id/check-out',
-  authenticate,
-  validate(checkOutSchema),
-  controller.checkOut.bind(controller)
-);
+router.post('/check-out', authenticate, validate(checkOutSchema), controller.checkOut);
 
 /**
- * @swagger
+ * @openapi
  * /attendance:
  *   post:
  *     summary: Manually create an attendance record (admin)
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [employee_id, date, status]
+ *             properties:
+ *               employee_id:
+ *                 type: string
+ *                 format: uuid
+ *               date:
+ *                 type: string
+ *                 format: date
+ *               check_in:
+ *                 type: string
+ *                 format: date-time
+ *               check_out:
+ *                 type: string
+ *                 format: date-time
+ *               status:
+ *                 type: string
+ *                 enum: [present, absent, late, half_day, on_leave, holiday]
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Record created
+ *       400:
+ *         description: Validation error
  */
 router.post(
   '/',
   authenticate,
-  authorize('admin', 'hr'),
+  authorize('admin', 'manager'),
   validate(createAttendanceSchema),
-  controller.create.bind(controller)
+  controller.createRecord
 );
 
 /**
- * @swagger
+ * @openapi
  * /attendance/{id}:
  *   patch:
  *     summary: Update an attendance record (admin)
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Record updated
  */
 router.patch(
   '/:id',
   authenticate,
-  authorize('admin', 'hr'),
+  authorize('admin', 'manager'),
   validate(updateAttendanceSchema),
-  controller.update.bind(controller)
+  controller.updateRecord
 );
 
 /**
- * @swagger
+ * @openapi
  * /attendance/{id}:
  *   delete:
  *     summary: Delete an attendance record (admin)
  *     tags: [Attendance]
  *     security:
- *       - BearerAuth: []
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *     responses:
+ *       200:
+ *         description: Record deleted
  */
-router.delete(
-  '/:id',
-  authenticate,
-  authorize('admin'),
-  controller.delete.bind(controller)
-);
+router.delete('/:id', authenticate, authorize('admin'), controller.deleteRecord);
+
+/**
+ * @openapi
+ * /attendance/summary/{employee_id}:
+ *   get:
+ *     summary: Get attendance summary for an employee
+ *     tags: [Attendance]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: employee_id
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: uuid
+ *       - in: query
+ *         name: date_from
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *       - in: query
+ *         name: date_to
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *     responses:
+ *       200:
+ *         description: Attendance summary with counts per status
+ */
+router.get('/summary/:employee_id', authenticate, controller.getSummary);
 
 module.exports = router;

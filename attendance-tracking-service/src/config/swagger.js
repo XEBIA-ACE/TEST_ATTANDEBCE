@@ -1,6 +1,5 @@
-'use strict';
-
 const swaggerJsdoc = require('swagger-jsdoc');
+const config = require('./index');
 
 const options = {
   definition: {
@@ -8,18 +7,21 @@ const options = {
     info: {
       title: 'Attendance Tracking Service API',
       version: '1.0.0',
-      description: 'REST API for managing employee attendance records.',
-      contact: { name: 'API Support', email: 'support@example.com' },
-      license: { name: 'MIT' },
+      description: 'REST API for tracking employee attendance, check-ins, check-outs, and generating reports.',
+      contact: {
+        name: 'API Support',
+        email: 'support@example.com',
+      },
     },
     servers: [
-      { url: 'http://localhost:3000/api/v1', description: 'Development' },
-      { url: 'https://staging.example.com/api/v1', description: 'Staging' },
-      { url: 'https://api.example.com/api/v1', description: 'Production' },
+      {
+        url: `http://localhost:${config.port}/api/v1`,
+        description: 'Development server',
+      },
     ],
     components: {
       securitySchemes: {
-        BearerAuth: {
+        bearerAuth: {
           type: 'http',
           scheme: 'bearer',
           bearerFormat: 'JWT',
@@ -29,14 +31,15 @@ const options = {
         Employee: {
           type: 'object',
           properties: {
-            id: { type: 'string', format: 'uuid' },
+            id: { type: 'string', format: 'uuid', example: 'a1b2c3d4-...' },
             employee_code: { type: 'string', example: 'EMP-001' },
             first_name: { type: 'string', example: 'Jane' },
             last_name: { type: 'string', example: 'Doe' },
-            email: { type: 'string', format: 'email' },
+            email: { type: 'string', format: 'email', example: 'jane.doe@company.com' },
             department: { type: 'string', example: 'Engineering' },
             position: { type: 'string', example: 'Software Engineer' },
-            is_active: { type: 'boolean', example: true },
+            status: { type: 'string', enum: ['active', 'inactive', 'on_leave'], example: 'active' },
+            hire_date: { type: 'string', format: 'date', example: '2024-01-15' },
             created_at: { type: 'string', format: 'date-time' },
             updated_at: { type: 'string', format: 'date-time' },
           },
@@ -46,43 +49,54 @@ const options = {
           properties: {
             id: { type: 'string', format: 'uuid' },
             employee_id: { type: 'string', format: 'uuid' },
-            date: { type: 'string', format: 'date', example: '2024-01-15' },
-            check_in_time: { type: 'string', format: 'date-time' },
-            check_out_time: { type: 'string', format: 'date-time', nullable: true },
+            date: { type: 'string', format: 'date', example: '2024-02-01' },
+            check_in: { type: 'string', format: 'date-time', example: '2024-02-01T09:00:00Z' },
+            check_out: { type: 'string', format: 'date-time', example: '2024-02-01T17:00:00Z' },
             status: {
               type: 'string',
-              enum: ['present', 'absent', 'late', 'half_day', 'holiday', 'leave'],
+              enum: ['present', 'absent', 'late', 'half_day', 'on_leave'],
+              example: 'present',
             },
-            notes: { type: 'string', nullable: true },
-            total_hours: { type: 'number', format: 'float', nullable: true },
+            notes: { type: 'string', example: 'Remote work' },
+            total_hours: { type: 'number', format: 'float', example: 8.0 },
             created_at: { type: 'string', format: 'date-time' },
+            updated_at: { type: 'string', format: 'date-time' },
           },
         },
         Error: {
           type: 'object',
           properties: {
             success: { type: 'boolean', example: false },
-            message: { type: 'string' },
-            errors: { type: 'array', items: { type: 'object' } },
+            error: {
+              type: 'object',
+              properties: {
+                code: { type: 'string', example: 'NOT_FOUND' },
+                message: { type: 'string', example: 'Resource not found' },
+              },
+            },
           },
         },
-        Pagination: {
+        PaginatedResponse: {
           type: 'object',
           properties: {
-            page: { type: 'integer' },
-            limit: { type: 'integer' },
-            total: { type: 'integer' },
-            totalPages: { type: 'integer' },
+            success: { type: 'boolean', example: true },
+            data: { type: 'array', items: {} },
+            pagination: {
+              type: 'object',
+              properties: {
+                page: { type: 'integer', example: 1 },
+                limit: { type: 'integer', example: 20 },
+                total: { type: 'integer', example: 100 },
+                totalPages: { type: 'integer', example: 5 },
+              },
+            },
           },
         },
       },
     },
-    security: [{ BearerAuth: [] }],
+    security: [{ bearerAuth: [] }],
   },
-  // Scan all route files for JSDoc @swagger annotations
   apis: ['./src/api/routes/*.js'],
 };
 
-const swaggerSpec = swaggerJsdoc(options);
-
-module.exports = swaggerSpec;
+module.exports = swaggerJsdoc(options);
