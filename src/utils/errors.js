@@ -1,5 +1,10 @@
+'use strict';
+
 /**
- * Base application error — always carries an HTTP status code.
+ * Base application error — all custom errors extend this class.
+ * Carrying an HTTP status code makes it easy for the error-handler middleware
+ * to translate domain errors into the correct HTTP response without any
+ * extra conditional logic.
  */
 class AppError extends Error {
   constructor(message, statusCode = 500, code = 'INTERNAL_ERROR') {
@@ -7,7 +12,7 @@ class AppError extends Error {
     this.name = this.constructor.name;
     this.statusCode = statusCode;
     this.code = code;
-    this.isOperational = true; // distinguish from programmer errors
+    this.isOperational = true; // Distinguishes expected errors from bugs
     Error.captureStackTrace(this, this.constructor);
   }
 }
@@ -19,7 +24,7 @@ class NotFoundError extends AppError {
 }
 
 class ValidationError extends AppError {
-  constructor(message, details = null) {
+  constructor(message, details = []) {
     super(message, 422, 'VALIDATION_ERROR');
     this.details = details;
   }
@@ -32,13 +37,13 @@ class ConflictError extends AppError {
 }
 
 class UnauthorizedError extends AppError {
-  constructor(message = 'Authentication required') {
+  constructor(message = 'Unauthorized') {
     super(message, 401, 'UNAUTHORIZED');
   }
 }
 
 class ForbiddenError extends AppError {
-  constructor(message = 'Access denied') {
+  constructor(message = 'Forbidden') {
     super(message, 403, 'FORBIDDEN');
   }
 }

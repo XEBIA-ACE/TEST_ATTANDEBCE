@@ -1,32 +1,13 @@
 version: '3.9'
 
 services:
-  # ── PostgreSQL ───────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: attendance_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: attendance_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - '5432:5432'
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Attendance Tracking Service ───────────────────────────────────────────────
+  # ─── API Service ──────────────────────────────────────────────────────────────
   app:
     build:
       context: .
-      dockerfile: Dockerfile
-      target: production
-    container_name: attendance_app
+      target: deps  # Use deps stage for dev (includes nodemon)
+    command: npx nodemon src/server.js
+    container_name: attendance-api
     restart: unless-stopped
     ports:
       - '3000:3000'
@@ -38,36 +19,89 @@ services:
       DB_NAME: attendance_db
       DB_USER: postgres
       DB_PASSWORD: postgres
-      JWT_SECRET: dev-secret-change-in-production
-      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
-      LOG_LEVEL: info
+      JWT_SECRET: local-dev-secret-change-in-production
+      JWT_EXPIRES_IN: 7d
+      LOG_LEVEL: debug
+      CORS_ORIGIN: '*'
     volumes:
+      # Hot-reload: mount source code
+      - ./src:/app/src
       - ./logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    networks:
+      - attendance-net
 
-  # ── pgAdmin (optional, comment out if not needed) ─────────────────────────────
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: attendance_pgadmin
+  # ─── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: attendance-postgres
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      POSTGRES_DB: attendance_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports:
-      - '5050:80'
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d attendance_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - attendance-net
+
+  # ─── Database migration runner ────────────────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      target: deps
+    command: npx knex --knexfile src/db/knexfile.js migrate:latest
+    container_name: attendance-migrate
+    environment:
+      NODE_ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - attendance-net
     profiles:
-      - tools   # start with: docker compose --profile tools up
+      - migrate
+
+  # ─── Seed runner ─────────────────────────────────────────────────────────────
+  seed:
+    build:
+      context: .
+      target: deps
+    command: npx knex --knexfile src/db/knexfile.js seed:run
+    container_name: attendance-seed
+    environment:
+      NODE_ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - attendance-net
+    profiles:
+      - seed
 
 volumes:
-  postgres_data:
-    driver: local
+  postgres-data:
+
+networks:
+  attendance-net:
+    driver: bridge

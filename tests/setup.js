@@ -1,12 +1,7 @@
-// Global test configuration and helpers
+'use strict';
 
-// Silence logger output during tests
-jest.mock('../src/config/logger.config', () => ({
-  info: jest.fn(),
-  warn: jest.fn(),
-  error: jest.fn(),
-  debug: jest.fn(),
-}));
-
-// Increase default test timeout for integration tests
-jest.setTimeout(30000);
+// Set test environment before any module loads config
+process.env.NODE_ENV = 'test';
+process.env.DB_NAME = process.env.DB_NAME || 'attendance_db_test';
+process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.LOG_LEVEL = 'error'; // Suppress logs in tests

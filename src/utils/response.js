@@ -1,67 +1,44 @@
-/**
- * Standardised JSON response helpers.
- *
- * All API responses share a consistent envelope:
- *   { success, data?, error?, meta?, message? }
- */
+'use strict';
 
 /**
- * Send a successful response.
+ * Sends a standardised success response.
+ *
  * @param {import('express').Response} res
- * @param {*} data - Payload to include under `data`
- * @param {object} [options]
- * @param {number}  [options.statusCode=200]
- * @param {string}  [options.message]
- * @param {object}  [options.meta] - Pagination or other metadata
+ * @param {*}      data        - Payload to include under `data`
+ * @param {string} message     - Human-readable description
+ * @param {number} statusCode  - HTTP status (default 200)
+ * @param {object} [meta]      - Optional metadata (pagination, etc.)
  */
-function sendSuccess(res, data, { statusCode = 200, message, meta } = {}) {
-  const body = { success: true };
-  if (message) body.message = message;
-  if (data !== undefined) body.data = data;
-  if (meta) body.meta = meta;
+function sendSuccess(res, data = null, message = 'Success', statusCode = 200, meta = null) {
+  const body = { success: true, message };
+  if (data !== null) body.data = data;
+  if (meta !== null) body.meta = meta;
   return res.status(statusCode).json(body);
 }
 
 /**
- * Send a created (201) response.
+ * Sends a standardised error response.
+ * Prefer using the errorHandler middleware instead of calling this directly.
  */
-function sendCreated(res, data, message) {
-  return sendSuccess(res, data, { statusCode: 201, message });
-}
-
-/**
- * Send a no-content (204) response.
- */
-function sendNoContent(res) {
-  return res.status(204).end();
-}
-
-/**
- * Send an error response. Prefer throwing AppError subclasses and letting
- * the global error handler call this instead of calling directly.
- */
-function sendError(res, { statusCode = 500, message = 'Internal server error', code, details } = {}) {
+function sendError(res, message, statusCode = 500, code = 'ERROR', details = null) {
   const body = {
     success: false,
-    error: {
-      code: code || 'INTERNAL_ERROR',
-      message,
-      ...(details && { details }),
-    },
+    error: { code, message },
   };
+  if (details) body.error.details = details;
   return res.status(statusCode).json(body);
 }
 
 /**
- * Build pagination metadata from Sequelize count/rows result.
+ * Builds a pagination metadata object from query params and total count.
  */
-function paginationMeta({ count, page, limit }) {
+function buildPaginationMeta(page, limit, total) {
   return {
-    total: count,
-    page: parseInt(page, 10),
-    limit: parseInt(limit, 10),
-    totalPages: Math.ceil(count / limit),
+    page: Number(page),
+    limit: Number(limit),
+    total,
+    totalPages: Math.ceil(total / limit),
   };
 }
 
-module.exports = { sendSuccess, sendCreated, sendNoContent, sendError, paginationMeta };
+module.exports = { sendSuccess, sendError, buildPaginationMeta };

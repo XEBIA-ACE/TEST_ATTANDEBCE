@@ -1,147 +1,178 @@
+'use strict';
+
 /**
- * Integration tests for the /api/v1/attendance endpoints.
+ * Integration tests for Attendance endpoints.
+ * Requires a running PostgreSQL test database with migrations applied.
  */
+
 const request = require('supertest');
-
-jest.mock('../../src/database/connection', () => ({
-  sequelize: {
-    authenticate: jest.fn().mockResolvedValue(true),
-    query: jest.fn().mockResolvedValue([]),
-    close: jest.fn().mockResolvedValue(true),
-  },
-  connectDatabase: jest.fn().mockResolvedValue(true),
-}));
-
-jest.mock('../../src/models', () => ({
-  sequelize: { authenticate: jest.fn(), query: jest.fn() },
-  Department: {},
-  Employee: {},
-  AttendanceRecord: {},
-}));
-
-jest.mock('../../src/services/attendance.service', () => ({
-  listRecords: jest.fn(),
-  getRecord: jest.fn(),
-  clockIn: jest.fn(),
-  clockOut: jest.fn(),
-  startBreak: jest.fn(),
-  endBreak: jest.fn(),
-  createManualRecord: jest.fn(),
-  updateRecord: jest.fn(),
-  deleteRecord: jest.fn(),
-  getSummary: jest.fn(),
-}));
-
 const app = require('../../src/app');
-const attendanceService = require('../../src/services/attendance.service');
-const { NotFoundError, ConflictError, BadRequestError } = require('../../src/utils/errors');
+const { getDatabase, destroyConnection } = require('../../src/config/database');
 
-const EMP_ID = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
-const REC_ID = 'a84bc20c-69dd-5483-b678-1f13c3d4e580';
+let db;
+let testEmployeeId;
 
-const sampleRecord = {
-  id: REC_ID,
-  employeeId: EMP_ID,
-  date: '2024-01-15',
-  clockIn: '2024-01-15T09:00:00.000Z',
-  clockOut: null,
-  status: 'present',
-  totalHours: null,
-};
+beforeAll(async () => {
+  db = getDatabase();
+  await db('attendance_records').del();
+  await db('employees').del();
 
-describe('Attendance API', () => {
-  beforeEach(() => jest.clearAllMocks());
+  // Create a reusable test employee
+  const [emp] = await db('employees').insert({
+    employee_code: 'EMP-ATT01',
+    first_name: 'Attendance',
+    last_name: 'Test',
+    email: 'attendance.test@example.com',
+    status: 'active',
+  }).returning('id');
 
-  describe('GET /api/v1/attendance', () => {
-    it('returns paginated records', async () => {
-      attendanceService.listRecords.mockResolvedValue({ count: 1, records: [sampleRecord] });
-      const res = await request(app).get('/api/v1/attendance');
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.meta.total).toBe(1);
-    });
-  });
+  testEmployeeId = emp.id;
+});
 
-  describe('GET /api/v1/attendance/summary', () => {
-    it('returns aggregated stats', async () => {
-      attendanceService.getSummary.mockResolvedValue({
-        totalDays: 10,
-        totalHours: 80.5,
-        overtimeHours: 0.5,
-        statusCounts: { present: 10 },
+afterAll(async () => {
+  await db('attendance_records').del();
+  await db('employees').del();
+  await destroyConnection();
+});
+
+afterEach(async () => {
+  // Clean attendance records between tests to avoid state leakage
+  await db('attendance_records').del();
+});
+
+describe('POST /api/v1/attendance/check-in', () => {
+  it('creates a check-in record and returns 201', async () => {
+    const res = await request(app)
+      .post('/api/v1/attendance/check-in')
+      .send({
+        employee_id: testEmployeeId,
+        check_in_time: '2024-01-15T08:00:00Z',
+        notes: 'On time',
       });
-      const res = await request(app).get('/api/v1/attendance/summary');
-      expect(res.status).toBe(200);
-      expect(res.body.data.totalDays).toBe(10);
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.employee_id).toBe(testEmployeeId);
+    expect(res.body.data.check_in_time).toBeDefined();
+    expect(res.body.data.status).toBe('present');
+  });
+
+  it('marks check-in as late when after 09:15 UTC', async () => {
+    const res = await request(app)
+      .post('/api/v1/attendance/check-in')
+      .send({
+        employee_id: testEmployeeId,
+        check_in_time: '2024-01-15T09:30:00Z',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.status).toBe('late');
+  });
+
+  it('returns 409 on duplicate check-in for the same day', async () => {
+    // First check-in
+    await request(app).post('/api/v1/attendance/check-in').send({
+      employee_id: testEmployeeId,
+      check_in_time: '2024-01-15T08:00:00Z',
+    });
+
+    // Duplicate
+    const res = await request(app).post('/api/v1/attendance/check-in').send({
+      employee_id: testEmployeeId,
+      check_in_time: '2024-01-15T09:00:00Z',
+    });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('returns 422 when employee_id is missing', async () => {
+    const res = await request(app)
+      .post('/api/v1/attendance/check-in')
+      .send({ notes: 'No employee' });
+
+    expect(res.status).toBe(422);
+  });
+});
+
+describe('POST /api/v1/attendance/check-out', () => {
+  beforeEach(async () => {
+    // Ensure there's a check-in to check out from
+    await request(app).post('/api/v1/attendance/check-in').send({
+      employee_id: testEmployeeId,
+      check_in_time: '2024-01-15T08:00:00Z',
     });
   });
 
-  describe('POST /api/v1/attendance/clock-in', () => {
-    it('records clock-in and returns 201', async () => {
-      attendanceService.clockIn.mockResolvedValue(sampleRecord);
-      const res = await request(app)
-        .post('/api/v1/attendance/clock-in')
-        .send({ employeeId: EMP_ID });
-      expect(res.status).toBe(201);
-      expect(res.body.data.employeeId).toBe(EMP_ID);
+  it('records check-out and calculates work hours', async () => {
+    const res = await request(app)
+      .post('/api/v1/attendance/check-out')
+      .send({
+        employee_id: testEmployeeId,
+        check_out_time: '2024-01-15T16:30:00Z',
+      });
+
+    expect(res.status).toBe(200);
+    expect(parseFloat(res.body.data.work_hours)).toBe(8.5);
+  });
+
+  it('returns 409 on duplicate check-out', async () => {
+    await request(app).post('/api/v1/attendance/check-out').send({
+      employee_id: testEmployeeId,
+      check_out_time: '2024-01-15T16:00:00Z',
     });
 
-    it('returns 409 when already clocked in', async () => {
-      attendanceService.clockIn.mockRejectedValue(new ConflictError('Already clocked in'));
-      const res = await request(app)
-        .post('/api/v1/attendance/clock-in')
-        .send({ employeeId: EMP_ID });
-      expect(res.status).toBe(409);
+    const res = await request(app).post('/api/v1/attendance/check-out').send({
+      employee_id: testEmployeeId,
+      check_out_time: '2024-01-15T17:00:00Z',
     });
 
-    it('returns 422 for missing employeeId', async () => {
-      const res = await request(app).post('/api/v1/attendance/clock-in').send({});
-      expect(res.status).toBe(422);
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('GET /api/v1/attendance', () => {
+  beforeEach(async () => {
+    await request(app).post('/api/v1/attendance/check-in').send({
+      employee_id: testEmployeeId,
+      check_in_time: '2024-01-15T08:00:00Z',
     });
   });
 
-  describe('POST /api/v1/attendance/clock-out', () => {
-    it('records clock-out', async () => {
-      const closed = { ...sampleRecord, clockOut: '2024-01-15T17:00:00.000Z', totalHours: 8.0 };
-      attendanceService.clockOut.mockResolvedValue(closed);
-      const res = await request(app)
-        .post('/api/v1/attendance/clock-out')
-        .send({ employeeId: EMP_ID });
-      expect(res.status).toBe(200);
-      expect(res.body.data.totalHours).toBe(8.0);
-    });
+  it('returns paginated attendance records', async () => {
+    const res = await request(app).get('/api/v1/attendance?page=1&limit=10');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.meta.total).toBeGreaterThanOrEqual(1);
+  });
 
-    it('returns 400 when no open session', async () => {
-      attendanceService.clockOut.mockRejectedValue(
-        new BadRequestError('No open clock-in session'),
-      );
-      const res = await request(app)
-        .post('/api/v1/attendance/clock-out')
-        .send({ employeeId: EMP_ID });
-      expect(res.status).toBe(400);
+  it('filters by employee_id', async () => {
+    const res = await request(app).get(`/api/v1/attendance?employee_id=${testEmployeeId}`);
+    expect(res.status).toBe(200);
+    res.body.data.forEach((rec) => expect(rec.employee_id).toBe(testEmployeeId));
+  });
+});
+
+describe('GET /api/v1/attendance/report', () => {
+  beforeEach(async () => {
+    await request(app).post('/api/v1/attendance/check-in').send({
+      employee_id: testEmployeeId,
+      check_in_time: '2024-01-15T08:00:00Z',
+    });
+    await request(app).post('/api/v1/attendance/check-out').send({
+      employee_id: testEmployeeId,
+      check_out_time: '2024-01-15T17:00:00Z',
     });
   });
 
-  describe('GET /api/v1/attendance/:id', () => {
-    it('returns the record', async () => {
-      attendanceService.getRecord.mockResolvedValue(sampleRecord);
-      const res = await request(app).get(`/api/v1/attendance/${REC_ID}`);
-      expect(res.status).toBe(200);
-      expect(res.body.data.id).toBe(REC_ID);
-    });
+  it('returns an aggregated report', async () => {
+    const res = await request(app).get(
+      `/api/v1/attendance/report?employee_id=${testEmployeeId}`
+    );
 
-    it('returns 404 when not found', async () => {
-      attendanceService.getRecord.mockRejectedValue(new NotFoundError('Attendance record'));
-      const res = await request(app).get('/api/v1/attendance/bad-id');
-      expect(res.status).toBe(404);
-    });
-  });
-
-  describe('DELETE /api/v1/attendance/:id', () => {
-    it('returns 204 on success', async () => {
-      attendanceService.deleteRecord.mockResolvedValue();
-      const res = await request(app).delete(`/api/v1/attendance/${REC_ID}`);
-      expect(res.status).toBe(204);
-    });
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    const entry = res.body.data.find((r) => r.employee_id === testEmployeeId);
+    expect(entry).toBeDefined();
+    expect(Number(entry.total_days)).toBe(1);
   });
 });

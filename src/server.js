@@ -1,52 +1,55 @@
+'use strict';
+
 require('dotenv').config();
+
 const app = require('./app');
-const { connectDatabase } = require('./database/connection');
-const logger = require('./config/logger.config');
-const appConfig = require('./config/app.config');
+const config = require('./config');
+const { checkConnection } = require('./config/database');
+const logger = require('./utils/logger');
 
-const { port } = appConfig;
+const PORT = config.server.port;
 
-async function startServer() {
-  try {
-    // Verify database connection before accepting traffic
-    await connectDatabase();
-
-    const server = app.listen(port, () => {
-      logger.info(`${appConfig.appName} v${appConfig.appVersion} started`, {
-        port,
-        env: appConfig.env,
-        docs: appConfig.env !== 'production' ? `http://localhost:${port}/api-docs` : 'disabled',
-      });
-    });
-
-    // ── Graceful shutdown ─────────────────────────────────────────────────────
-    const shutdown = async (signal) => {
-      logger.info(`${signal} received — shutting down gracefully`);
-      server.close(async () => {
-        try {
-          const { sequelize } = require('./database/connection');
-          await sequelize.close();
-          logger.info('Database connection closed');
-        } catch (err) {
-          logger.error('Error closing database connection', { error: err.message });
-        }
-        logger.info('Server shutdown complete');
-        process.exit(0);
-      });
-
-      // Force-kill if shutdown takes too long
-      setTimeout(() => {
-        logger.error('Forced shutdown after timeout');
-        process.exit(1);
-      }, 10_000);
-    };
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
-  } catch (error) {
-    logger.error('Failed to start server', { error: error.message, stack: error.stack });
+async function start() {
+  // Verify DB is reachable before accepting traffic
+  const dbOk = await checkConnection();
+  if (!dbOk) {
+    logger.error('Cannot connect to database. Exiting.');
     process.exit(1);
   }
+
+  const server = app.listen(PORT, () => {
+    logger.info(`Attendance Tracking Service started`, {
+      port: PORT,
+      env: config.env,
+      apiBase: `/api/${config.server.apiVersion}`,
+      docs: config.isProd ? 'disabled' : `http://localhost:${PORT}/api-docs`,
+    });
+  });
+
+  // Graceful shutdown: stop accepting new connections and wait for in-flight requests
+  function shutdown(signal) {
+    logger.info(`Received ${signal}. Shutting down gracefully…`);
+    server.close(async () => {
+      const { destroyConnection } = require('./config/database');
+      await destroyConnection();
+      logger.info('Server and DB connections closed. Goodbye.');
+      process.exit(0);
+    });
+
+    // Force exit after 10 seconds if requests haven't drained
+    setTimeout(() => {
+      logger.error('Forcing shutdown after timeout');
+      process.exit(1);
+    }, 10_000);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Log unhandled promise rejections (should never happen in production)
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection', { reason });
+  });
 }
 
-startServer();
+start();

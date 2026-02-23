@@ -6,16 +6,20 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "migrate": "node src/database/migrate.js",
-    "migrate:undo": "node src/database/migrate.js undo",
-    "seed": "node src/database/seed.js",
+    "migrate": "knex --knexfile src/db/knexfile.js migrate:latest",
+    "migrate:rollback": "knex --knexfile src/db/knexfile.js migrate:rollback",
+    "migrate:make": "knex --knexfile src/db/knexfile.js migrate:make",
+    "seed": "knex --knexfile src/db/knexfile.js seed:run",
     "test": "jest --runInBand --forceExit",
     "test:unit": "jest tests/unit --runInBand --forceExit",
     "test:integration": "jest tests/integration --runInBand --forceExit",
     "test:coverage": "jest --coverage --runInBand --forceExit",
-    "lint": "eslint src/ tests/ --ext .js",
-    "lint:fix": "eslint src/ tests/ --ext .js --fix"
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix"
   },
+  "keywords": ["attendance", "tracking", "nodejs", "express", "rest-api"],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
@@ -23,54 +27,39 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.3.1",
+    "express-validator": "^7.1.0",
     "helmet": "^7.1.0",
     "joi": "^17.13.1",
     "jsonwebtoken": "^9.0.2",
+    "knex": "^3.1.0",
+    "morgan": "^1.10.0",
     "pg": "^8.12.0",
-    "pg-hstore": "^2.3.4",
-    "sequelize": "^6.37.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
-    "umzug": "^3.8.1",
     "uuid": "^10.0.0",
     "winston": "^3.13.0",
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "eslint": "^8.57.0",
-    "eslint-config-airbnb-base": "^15.0.0",
-    "eslint-plugin-import": "^2.29.1",
+    "@types/jest": "^29.5.12",
+    "eslint": "^9.7.0",
     "jest": "^29.7.0",
     "nodemon": "^3.1.4",
-    "sequelize-mock": "^0.10.2",
     "supertest": "^7.0.0"
   },
   "jest": {
     "testEnvironment": "node",
-    "coverageDirectory": "coverage",
+    "testMatch": ["**/tests/**/*.test.js"],
     "collectCoverageFrom": [
       "src/**/*.js",
       "!src/server.js",
-      "!src/database/migrate.js",
-      "!src/database/seed.js"
+      "!src/db/knexfile.js"
     ],
-    "testMatch": [
-      "**/tests/**/*.test.js"
-    ],
-    "setupFilesAfterFramework": [
-      "./tests/setup.js"
-    ]
+    "coverageDirectory": "coverage",
+    "coverageReporters": ["text", "lcov", "html"],
+    "setupFilesAfterFramework": ["./tests/setup.js"]
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "keywords": [
-    "attendance",
-    "tracking",
-    "hr",
-    "express",
-    "nodejs"
-  ],
-  "author": "Attendance Tracking Service",
-  "license": "MIT"
+  }
 }
