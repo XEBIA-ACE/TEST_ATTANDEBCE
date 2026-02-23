@@ -1,38 +1,30 @@
-const { AppError } = require('./errorHandler');
+'use strict';
+
+const { validationResult } = require('express-validator');
+const { ValidationError } = require('../../utils/errors');
 
 /**
- * Joi schema validation middleware factory.
+ * Validation middleware runner.
  *
- * @param {Object} schema - Object with optional keys: body, query, params
- * @returns Express middleware that validates and sanitises the request.
+ * Collects all validation errors from express-validator chains
+ * and throws a structured ValidationError if any exist.
+ *
+ * Usage (in routes):
+ *   router.post('/', [...validationChains], validate, controllerFn)
  */
-const validate = (schema) => (req, res, next) => {
-  const errors = [];
+const validate = (req, res, next) => {
+  const errors = validationResult(req);
 
-  for (const key of ['body', 'query', 'params']) {
-    if (schema[key]) {
-      const { error, value } = schema[key].validate(req[key], {
-        abortEarly: false,
-        stripUnknown: true,
-        convert: true,
-      });
-
-      if (error) {
-        errors.push(...error.details.map((d) => ({
-          field: `${key}.${d.path.join('.')}`,
-          message: d.message.replace(/['"]/g, ''),
-        })));
-      } else {
-        req[key] = value; // Replace with sanitised/coerced value
-      }
-    }
+  if (!errors.isEmpty()) {
+    const details = errors.array().map((err) => ({
+      field: err.path,
+      message: err.msg,
+      value: err.value,
+    }));
+    return next(new ValidationError('Request validation failed', details));
   }
 
-  if (errors.length > 0) {
-    return next(new AppError('Validation failed', 422, errors));
-  }
-
-  return next();
+  next();
 };
 
 module.exports = validate;

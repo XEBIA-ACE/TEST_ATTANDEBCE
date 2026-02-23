@@ -1,54 +1,58 @@
-# ─── Stage 1: Install dependencies ───────────────────────────────────────────
+# ─── Stage 1: Dependencies ────────────────────────────────────────────────────
 FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-# Copy dependency manifests only (for layer caching)
+# Copy only package files first for better layer caching
 COPY package*.json ./
 
 # Install production dependencies only
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && npm cache clean --force
 
-# ─── Stage 2: Build / Prepare (no transpile step needed for plain JS) ─────────
+
+# ─── Stage 2: Build / Test (CI only) ─────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
-# Install all deps including dev for any future build steps
-RUN npm ci
+
+# Full install including devDependencies for tests/linting
+RUN npm ci && npm cache clean --force
 
 COPY . .
 
-# ─── Stage 3: Production image ────────────────────────────────────────────────
+# Verify no lint errors in CI
+# RUN npm run lint
+
+
+# ─── Stage 3: Production runtime ─────────────────────────────────────────────
 FROM node:20-alpine AS production
 
-# Install dumb-init for proper PID 1 handling and signal forwarding
-RUN apk add --no-cache dumb-init
-
-# Create a non-root user
-RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
+# Security: run as non-root user
+RUN addgroup -g 1001 -S appgroup && \
+    adduser  -u 1001 -S appuser -G appgroup
 
 WORKDIR /app
 
-# Copy production node_modules from deps stage
-COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
+# Copy production deps from the deps stage (no devDependencies)
+COPY --from=deps --chown=appuser:appgroup /app/node_modules ./node_modules
 
 # Copy application source
-COPY --chown=nodejs:nodejs . .
+COPY --chown=appuser:appgroup src/ ./src/
+COPY --chown=appuser:appgroup package*.json ./
 
-# Remove dev-only files from the image
-RUN rm -f .env* && rm -rf tests/
+# Create logs directory with correct ownership
+RUN mkdir -p logs && chown appuser:appgroup logs
 
-# Switch to non-root user
-USER nodejs
+USER appuser
 
+# Expose the application port
 EXPOSE 3000
 
-ENV NODE_ENV=production
+# Health check: docker can restart the container if the service is unhealthy
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/api/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
-
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "server.js"]
+# Use exec form for proper signal handling (enables graceful shutdown)
+CMD ["node", "src/server.js"]

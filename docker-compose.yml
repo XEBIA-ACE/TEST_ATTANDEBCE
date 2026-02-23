@@ -1,76 +1,108 @@
-version: '3.9'
+version: "3.9"
 
 services:
-  api:
+  # ─── Application ─────────────────────────────────────────────────────────────
+  app:
     build:
       context: .
-      target: builder   # Use builder stage for dev (includes devDeps + hot-reload)
-    container_name: attendance-api
+      target: production
+    container_name: attendance-app
     restart: unless-stopped
     ports:
-      - '${PORT:-3000}:3000'
+      - "3000:3000"
     environment:
       NODE_ENV: development
       PORT: 3000
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-attendance_db}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_in_production}
-      JWT_EXPIRES_IN: 1d
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      JWT_SECRET: dev_jwt_secret_change_in_production
       LOG_LEVEL: debug
-      CORS_ORIGIN: '*'
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - .:/app
-      - /app/node_modules   # Prevent host node_modules from overwriting container's
-    command: ['node_modules/.bin/nodemon', 'server.js']
+      # Mount source for hot-reload in dev (use dev target for nodemon)
+      - ./src:/app/src:ro
+      - app-logs:/app/logs
+    networks:
+      - attendance-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ─── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: attendance-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: attendance_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - attendance-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d attendance_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── Migration runner (one-shot) ──────────────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      target: builder
+    container_name: attendance-migrate
+    command: npm run migrate
+    environment:
+      NODE_ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: attendance_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - attendance-net
+    profiles:
+      - migrate
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: attendance-postgres
-    restart: unless-stopped
-    ports:
-      - '${DB_PORT:-5432}:5432'
-    environment:
-      POSTGRES_DB: ${DB_NAME:-attendance_db}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-attendance_db}']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - attendance-net
-
-  # Optional: PgAdmin for database inspection
+  # ─── pgAdmin (optional, dev only) ────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: attendance-pgadmin
-    restart: unless-stopped
-    ports:
-      - '5050:80'
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
     depends_on:
       - postgres
     networks:
       - attendance-net
     profiles:
-      - tools   # Only starts with: docker compose --profile tools up
+      - tools
 
 volumes:
   postgres-data:
+    name: attendance-postgres-data
+  app-logs:
+    name: attendance-app-logs
 
 networks:
   attendance-net:
+    name: attendance-network
     driver: bridge

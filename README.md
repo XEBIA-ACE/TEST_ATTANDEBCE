@@ -1,274 +1,355 @@
 # Attendance Tracking Service
 
-A production-ready REST API for managing employee attendance records — check-ins, check-outs, and reporting.
+A production-ready REST API for tracking employee attendance — check-ins, check-outs, and reporting — built with Node.js and Express.
 
 ---
 
 ## Table of Contents
 
+- [Features](#features)
 - [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Quick Start (Docker)](#quick-start-docker)
-- [Local Setup](#local-setup)
-- [Environment Variables](#environment-variables)
-- [Database Migrations](#database-migrations)
-- [API Documentation](#api-documentation)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
 - [API Reference](#api-reference)
+- [Database Schema](#database-schema)
 - [Testing](#testing)
+- [Docker](#docker)
 - [Project Structure](#project-structure)
+
+---
+
+## Features
+
+- **Employee Management** — CRUD operations with unique code and email enforcement
+- **Attendance Tracking** — Check-in / check-out with automatic status detection (present, late, half-day)
+- **Overtime Detection** — Automatically flags records exceeding standard work hours
+- **Reporting** — Aggregated summary reports filterable by employee, date range, and department
+- **Pagination & Filtering** — All list endpoints support pagination, filtering, and search
+- **JWT Auth Placeholder** — Auth middleware ready to plug in your identity provider
+- **OpenAPI/Swagger Docs** — Auto-generated and served at `/api-docs`
+- **Structured Logging** — Winston with daily log rotation
+- **Health & Metrics** — `/health` and `/metrics` endpoints for observability
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   HTTP Client                    │
-└────────────────────┬─────────────────────────────┘
-                     │
-┌────────────────────▼─────────────────────────────┐
-│              Express API Layer                   │
-│  Routes → Validators → Auth → Controllers        │
-└────────────────────┬─────────────────────────────┘
-                     │
-┌────────────────────▼─────────────────────────────┐
-│            Business Logic Layer                  │
-│         Services + Domain Utilities              │
-└────────────────────┬─────────────────────────────┘
-                     │
-┌────────────────────▼─────────────────────────────┐
-│             Data Access Layer                    │
-│      Repositories → Models → Knex → PostgreSQL   │
-└──────────────────────────────────────────────────┘
+src/
+├── api/                    # HTTP Layer
+│   ├── controllers/        # Request handling, response formatting
+│   ├── middlewares/        # Auth, error handling, logging, validation
+│   └── routes/             # Express router definitions + Swagger annotations
+│
+├── services/               # Business Logic Layer
+│   ├── employeeService.js  # Employee business rules
+│   └── attendanceService.js# Check-in/out logic, status derivation
+│
+├── repositories/           # Data Access Layer
+│   ├── employeeRepository.js
+│   └── attendanceRepository.js
+│
+├── db/                     # Database
+│   ├── migrations/         # Knex migration files
+│   └── seeds/              # Sample data
+│
+├── config/                 # Configuration
+│   ├── env.js              # Centralized env vars
+│   ├── knexfile.js         # DB config per environment
+│   └── swagger.js          # OpenAPI spec
+│
+└── utils/                  # Shared utilities
+    ├── errors.js           # Domain-specific error classes
+    ├── logger.js           # Winston logger
+    └── response.js         # Standardized response helpers
 ```
 
-**Clean Architecture** with strict layer separation:
-- **API Layer** — HTTP concerns only (routing, validation, auth, request/response)
-- **Business Layer** — Domain rules and use cases, no HTTP or DB awareness
-- **Data Layer** — All database access via repository pattern
+**Design principles:**
+- **Clean Architecture** — Each layer has a single responsibility; dependencies flow inward
+- **SOLID** — Services depend on repository interfaces, not implementations
+- **Fail Fast** — DB connection is verified at startup; unhandled rejections crash the process
+- **Operational Errors vs Crashes** — `AppError` subclasses are safe to surface to clients; unexpected errors return a generic 500
 
 ---
 
-## Tech Stack
-
-| Concern            | Library / Tool               |
-|--------------------|------------------------------|
-| Runtime            | Node.js 20                   |
-| HTTP framework     | Express 4                    |
-| Database           | PostgreSQL 16                |
-| Query builder      | Knex.js                      |
-| Validation         | Joi                          |
-| Authentication     | JSON Web Tokens (jsonwebtoken)|
-| Logging            | Winston + Daily Rotate File  |
-| Documentation      | Swagger / OpenAPI 3.0        |
-| Testing            | Jest + Supertest             |
-| Container          | Docker + Docker Compose      |
-
----
-
-## Quick Start (Docker)
-
-```bash
-# 1. Clone and enter the project
-git clone <repo-url>
-cd attendance-tracking-service
-
-# 2. Copy and customise environment variables
-cp .env.example .env
-
-# 3. Start all services (API + PostgreSQL)
-docker compose up --build
-
-# 4. Run database migrations
-docker compose exec api npm run migrate
-
-# 5. (Optional) Seed sample data
-docker compose exec api npm run seed
-```
-
-The API is now available at **http://localhost:3000**
-Swagger UI: **http://localhost:3000/api-docs**
-
----
-
-## Local Setup
+## Quick Start
 
 ### Prerequisites
 
-- Node.js >= 18
-- PostgreSQL >= 14
+- Node.js 18+
+- PostgreSQL 14+ (or Docker)
+
+### 1. Clone and install
 
 ```bash
-# Install dependencies
+git clone <repo-url>
+cd attendance-tracking-service
 npm install
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your PostgreSQL credentials
-
-# Run migrations
-npm run migrate
-
-# Seed sample data (optional)
-npm run seed
-
-# Start development server with hot-reload
-npm run dev
 ```
 
----
-
-## Environment Variables
-
-| Variable                  | Description                        | Default           |
-|---------------------------|------------------------------------|-------------------|
-| `NODE_ENV`                | Runtime environment                | `development`     |
-| `PORT`                    | HTTP port                          | `3000`            |
-| `DB_HOST`                 | PostgreSQL host                    | `localhost`       |
-| `DB_PORT`                 | PostgreSQL port                    | `5432`            |
-| `DB_NAME`                 | Database name                      | `attendance_db`   |
-| `DB_USER`                 | Database user                      | `postgres`        |
-| `DB_PASSWORD`             | Database password                  | —                 |
-| `JWT_SECRET`              | Secret for signing JWTs            | —                 |
-| `JWT_EXPIRES_IN`          | Token lifetime                     | `1d`              |
-| `LOG_LEVEL`               | Winston log level                  | `info`            |
-| `CORS_ORIGIN`             | Allowed CORS origin                | `*`               |
-| `RATE_LIMIT_MAX_REQUESTS` | Max requests per window            | `100`             |
-
----
-
-## Database Migrations
+### 2. Configure environment
 
 ```bash
-# Apply all pending migrations
+cp .env.example .env
+# Edit .env — at minimum set DB_PASSWORD and JWT_SECRET
+```
+
+### 3. Run database migrations
+
+```bash
 npm run migrate
+```
 
-# Rollback the latest migration batch
-npm run migrate:rollback
+### 4. (Optional) Seed sample data
 
-# Create a new migration file
-npm run migrate:make migration_name
-
-# Run seeds
+```bash
 npm run seed
 ```
 
+### 5. Start the server
+
+```bash
+# Development (with auto-restart)
+npm run dev
+
+# Production
+npm start
+```
+
+The server starts on `http://localhost:3000`.
+API docs are available at `http://localhost:3000/api-docs` (development only).
+
 ---
 
-## API Documentation
+## Configuration
 
-Interactive Swagger UI is available at `/api-docs` when the server is running.
+All configuration is driven by environment variables. See `.env.example` for the full list.
 
-Raw OpenAPI spec: `GET /api-docs.json`
+| Variable | Default | Description |
+|---|---|---|
+| `NODE_ENV` | `development` | `development`, `test`, or `production` |
+| `PORT` | `3000` | HTTP server port |
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_NAME` | `attendance_db` | Database name |
+| `DB_USER` | `postgres` | Database user |
+| `DB_PASSWORD` | — | Database password |
+| `JWT_SECRET` | — | **Required in production** |
+| `JWT_EXPIRES_IN` | `24h` | Access token lifetime |
+| `LOG_LEVEL` | `info` | winston log level |
+| `RATE_LIMIT_MAX_REQUESTS` | `100` | Requests per window |
+| `CORS_ORIGIN` | `http://localhost:3000` | Comma-separated allowed origins |
 
 ---
 
 ## API Reference
 
-All endpoints are prefixed with `/api/v1`.
-Authentication: `Authorization: Bearer <token>` header required (except `/api/health`).
-
-### Health
-
-| Method | Path                | Description              | Auth |
-|--------|---------------------|--------------------------|------|
-| GET    | `/health`           | Liveness probe           | No   |
-| GET    | `/health/ready`     | Readiness + DB check     | No   |
-| GET    | `/health/metrics`   | Process metrics          | No   |
+Base URL: `http://localhost:3000/api/v1`
 
 ### Employees
 
-| Method | Path                 | Description               | Role Required    |
-|--------|----------------------|---------------------------|------------------|
-| POST   | `/v1/employees`      | Create employee            | admin, hr        |
-| GET    | `/v1/employees`      | List employees (paginated) | any              |
-| GET    | `/v1/employees/:id`  | Get employee by ID         | any              |
-| PUT    | `/v1/employees/:id`  | Update employee            | admin, hr        |
-| DELETE | `/v1/employees/:id`  | Deactivate employee        | admin            |
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/employees` | List employees (paginated, filterable) |
+| `POST` | `/employees` | Create a new employee |
+| `GET` | `/employees/:id` | Get employee by ID |
+| `PUT` | `/employees/:id` | Update employee |
+| `DELETE` | `/employees/:id` | Delete employee |
+| `GET` | `/employees/departments` | List distinct departments |
 
-**Query parameters for `GET /v1/employees`:**
-- `page`, `pageSize` — Pagination
-- `department` — Filter by department
-- `employmentType` — full_time | part_time | contractor | intern
-- `isActive` — true | false
-- `search` — Full-text search on name/email
-- `sortBy` — firstName | lastName | department | hireDate | createdAt
-- `sortOrder` — asc | desc
+**Query parameters for `GET /employees`:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `status` | string | Filter: `active`, `inactive`, `on_leave` |
+| `department` | string | Filter by department name |
+| `search` | string | Search name, email, employee code |
+| `page` | integer | Page number (default: 1) |
+| `limit` | integer | Page size (default: 20, max: 100) |
 
 ### Attendance
 
-| Method | Path                                  | Description                     | Role Required         |
-|--------|---------------------------------------|---------------------------------|-----------------------|
-| POST   | `/v1/attendance/check-in`             | Record employee check-in        | any                   |
-| PATCH  | `/v1/attendance/:id/check-out`        | Record employee check-out       | any                   |
-| GET    | `/v1/attendance`                      | List records (paginated)        | any                   |
-| GET    | `/v1/attendance/:id`                  | Get single record               | any                   |
-| GET    | `/v1/attendance/employees/:empId`     | Employee's attendance history   | any                   |
-| GET    | `/v1/attendance/summary`              | Attendance report (date range)  | admin, hr, manager    |
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/attendance/check-in` | Record employee check-in |
+| `POST` | `/attendance/check-out` | Record employee check-out |
+| `GET` | `/attendance` | List records (paginated, filterable) |
+| `GET` | `/attendance/:id` | Get a specific record |
+| `PUT` | `/attendance/:id` | Admin correction of a record |
+| `DELETE` | `/attendance/:id` | Delete a record |
+| `GET` | `/attendance/reports/summary` | Aggregated report |
 
-**Query parameters for `GET /v1/attendance`:**
-- `page`, `pageSize` — Pagination
-- `employeeId` — Filter by employee
-- `department` — Filter by department
-- `startDate`, `endDate` — ISO date range
-- `status` — checked_in | checked_out | absent
-
-### Request/Response Examples
-
-**Check In**
+**Check-in request body:**
 ```json
-POST /api/v1/attendance/check-in
 {
-  "employeeId": "550e8400-e29b-41d4-a716-446655440000",
-  "notes": "Working from office",
-  "location": {
-    "latitude": 40.7128,
-    "longitude": -74.0060,
-    "address": "New York, NY"
+  "employeeId": "uuid",
+  "notes": "Optional note",
+  "location": "Office - Floor 3"
+}
+```
+
+**Check-out request body:**
+```json
+{
+  "employeeId": "uuid",
+  "notes": "Optional note",
+  "location": "Office - Floor 3"
+}
+```
+
+**Query parameters for `GET /attendance`:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `employeeId` | UUID | Filter by employee |
+| `status` | string | `present`, `absent`, `late`, `half_day`, `on_leave` |
+| `dateFrom` | date | Start of date range (YYYY-MM-DD) |
+| `dateTo` | date | End of date range (YYYY-MM-DD) |
+| `department` | string | Filter by department |
+| `page` / `limit` | integer | Pagination |
+
+### Health & Metrics
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness/readiness check |
+| `GET` | `/metrics` | Process memory and uptime |
+
+### Response Envelope
+
+All responses follow a consistent structure:
+
+**Success:**
+```json
+{
+  "success": true,
+  "data": { ... },
+  "meta": {
+    "pagination": { "page": 1, "limit": 20, "total": 45, "totalPages": 3 }
   }
 }
 ```
 
-**Response**
+**Error:**
 ```json
 {
-  "status": "success",
-  "data": {
-    "record": {
-      "id": "b3d5e7f9-...",
-      "employeeId": "550e8400-...",
-      "firstName": "Alice",
-      "lastName": "Smith",
-      "department": "Engineering",
-      "checkInTime": "2024-06-15T09:00:00.000Z",
-      "checkOutTime": null,
-      "workedHours": null,
-      "status": "checked_in"
-    }
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Request validation failed",
+    "details": [{ "field": "email", "message": "email must be a valid email address" }]
   }
 }
 ```
+
+**Error codes:**
+
+| Code | HTTP Status | Meaning |
+|------|-------------|---------|
+| `NOT_FOUND` | 404 | Resource not found |
+| `VALIDATION_ERROR` | 422 | Input validation failed |
+| `CONFLICT` | 409 | Duplicate resource |
+| `BAD_REQUEST` | 400 | Business rule violation |
+| `UNAUTHORIZED` | 401 | Missing/invalid token |
+| `FORBIDDEN` | 403 | Insufficient permissions |
+| `INTERNAL_SERVER_ERROR` | 500 | Unexpected server error |
+
+---
+
+## Database Schema
+
+### `employees`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | Auto-generated |
+| `employee_code` | VARCHAR(20) | Unique human-readable ID |
+| `first_name` | VARCHAR(100) | |
+| `last_name` | VARCHAR(100) | |
+| `email` | VARCHAR(255) | Unique |
+| `phone` | VARCHAR(30) | Optional |
+| `department` | VARCHAR(100) | Optional |
+| `position` | VARCHAR(100) | Optional |
+| `status` | ENUM | `active`, `inactive`, `on_leave` |
+| `hire_date` | DATE | Optional |
+| `expected_check_in` | TIME | Used for late detection |
+| `expected_check_out` | TIME | Used for overtime detection |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
+
+### `attendance_records`
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID (PK) | Auto-generated |
+| `employee_id` | UUID (FK) | → `employees.id` |
+| `date` | DATE | Unique with `employee_id` |
+| `check_in` | TIMESTAMPTZ | |
+| `check_out` | TIMESTAMPTZ | Null until checked out |
+| `status` | ENUM | `present`, `absent`, `late`, `half_day`, `on_leave` |
+| `work_hours` | DECIMAL(5,2) | Computed on check-out |
+| `is_overtime` | BOOLEAN | True if `work_hours > 9` |
+| `notes` | TEXT | Optional |
+| `check_in_location` | VARCHAR(255) | Optional GPS/office info |
+| `check_out_location` | VARCHAR(255) | Optional |
+| `created_at` / `updated_at` | TIMESTAMPTZ | Auto-managed |
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests
+# All tests
 npm test
 
 # Unit tests only
 npm run test:unit
 
-# Integration tests (requires running DB)
-INTEGRATION_TEST=true npm run test:integration
+# Integration tests only
+npm run test:integration
 
-# Coverage report
+# With coverage report
 npm run test:coverage
 ```
 
-Unit tests mock all dependencies and run without a database.
-Integration tests require `INTEGRATION_TEST=true` and a PostgreSQL test database (`DB_NAME_TEST`).
+- **Unit tests** mock the repository layer and test service business logic in isolation
+- **Integration tests** use an SQLite in-memory database, exercising the full Express stack via `supertest`
+
+---
+
+## Docker
+
+### Start everything with Docker Compose
+
+```bash
+# Start PostgreSQL and the application
+docker compose up -d
+
+# Run migrations (first time or after new migrations)
+docker compose --profile migrate run migrate
+
+# Optional: start pgAdmin at http://localhost:5050
+docker compose --profile tools up -d pgadmin
+
+# View logs
+docker compose logs -f app
+
+# Stop
+docker compose down
+```
+
+### Build and run the image manually
+
+```bash
+docker build -t attendance-tracking-service:latest .
+docker run -p 3000:3000 --env-file .env attendance-tracking-service:latest
+```
+
+### Image details
+
+- **Base:** `node:20-alpine` (minimal footprint)
+- **Multi-stage build** — devDependencies are excluded from the final image
+- **Non-root user** — runs as `appuser` (UID 1001) for security
+- **HEALTHCHECK** — Docker monitors `/health` and restarts unhealthy containers
 
 ---
 
@@ -277,27 +358,29 @@ Integration tests require `INTEGRATION_TEST=true` and a PostgreSQL test database
 ```
 attendance-tracking-service/
 ├── src/
-│   ├── api/                    # HTTP layer
-│   │   ├── controllers/        # Request handlers
-│   │   ├── middlewares/        # Auth, validation, logging, errors
-│   │   ├── routes/             # Route definitions
-│   │   └── validators/         # Joi schemas
-│   ├── business/               # Domain logic
-│   │   ├── services/           # Use cases
-│   │   └── utils/              # Pure utilities (dateUtils, etc.)
-│   ├── data/                   # Data access
+│   ├── api/
+│   │   ├── controllers/        # HTTP request handlers
+│   │   ├── middlewares/        # auth, errorHandler, requestLogger, validate
+│   │   └── routes/             # Express routers
+│   ├── config/
+│   │   ├── env.js              # Validated env config
+│   │   ├── knexfile.js         # Knex per-environment DB config
+│   │   └── swagger.js          # OpenAPI spec generation
+│   ├── db/
 │   │   ├── migrations/         # Knex migration files
-│   │   ├── models/             # Column mapping (DB ↔ JS)
-│   │   ├── repositories/       # Query encapsulation
-│   │   └── seeds/              # Sample data
-│   ├── config/                 # Database, logger, Swagger
-│   └── app.js                  # Express application factory
+│   │   └── seeds/              # Development seed data
+│   ├── repositories/           # Database query layer
+│   ├── services/               # Business logic layer
+│   ├── utils/                  # errors.js, logger.js, response.js
+│   ├── app.js                  # Express app setup
+│   └── server.js               # Entry point, graceful shutdown
 ├── tests/
-│   ├── unit/                   # Unit tests (no I/O)
-│   └── integration/            # API integration tests
-├── Dockerfile                  # Multi-stage production image
-├── docker-compose.yml          # Local development stack
-├── knexfile.js                 # Database configuration
-├── server.js                   # Entry point with graceful shutdown
-└── .env.example                # Environment variable template
+│   ├── unit/services/          # Mocked service unit tests
+│   └── integration/            # Full-stack integration tests (SQLite)
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── docker-compose.yml
+├── package.json
+└── README.md
 ```
