@@ -1,5 +1,3 @@
-'use strict';
-
 module.exports = {
   env: {
     node: true,
@@ -9,6 +7,7 @@ module.exports = {
   extends: ['eslint:recommended'],
   parserOptions: {
     ecmaVersion: 'latest',
+    sourceType: 'module',
   },
   rules: {
     'no-console': 'warn',
@@ -17,6 +16,7 @@ module.exports = {
     'prefer-const': 'error',
     eqeqeq: ['error', 'always'],
     curly: ['error', 'all'],
-    'no-throw-literal': 'error',
+    semi: ['error', 'always'],
+    quotes: ['error', 'single'],
   },
 };

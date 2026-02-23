@@ -1,53 +1,43 @@
 'use strict';
 
-const knex = require('knex');
-const knexConfig = require('./knexfile');
-const env = require('./env');
-const logger = require('../utils/logger');
-
-let db = null;
+const { Pool } = require('pg');
 
 /**
- * Returns a singleton Knex database connection.
- * Lazily initialized on first call.
+ * PostgreSQL connection pool.
+ * Configured via environment variables; supports dev/staging/prod.
  */
-function getDb() {
-  if (!db) {
-    const config = knexConfig[env.app.env] || knexConfig.development;
-    db = knex(config);
+const pool = new Pool({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  database: process.env.DB_NAME || 'attendance_db',
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD,
+  min: parseInt(process.env.DB_POOL_MIN || '2', 10),
+  max: parseInt(process.env.DB_POOL_MAX || '10', 10),
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+});
 
-    db.on('query', (query) => {
-      if (env.app.isDev) {
-        logger.debug('SQL query executed', { sql: query.sql, bindings: query.bindings });
-      }
-    });
-  }
-  return db;
-}
+pool.on('error', (err) => {
+  // Log unexpected idle client errors without crashing the process
+  const logger = require('./logger');
+  logger.error('Unexpected error on idle database client', { error: err.message });
+});
 
 /**
- * Checks database connectivity.
- * @returns {Promise<boolean>}
+ * Execute a single SQL query using the pool.
+ * @param {string} text  - SQL query string
+ * @param {Array}  params - Parameterised values
+ * @returns {Promise<import('pg').QueryResult>}
  */
-async function checkConnection() {
-  try {
-    await getDb().raw('SELECT 1');
-    return true;
-  } catch (err) {
-    logger.error('Database connection check failed', { error: err.message });
-    return false;
-  }
-}
+const query = (text, params) => pool.query(text, params);
 
 /**
- * Gracefully destroys the database connection pool.
+ * Acquire a client for multi-statement transactions.
+ * Caller MUST release the client when done.
+ * @returns {Promise<import('pg').PoolClient>}
  */
-async function closeDb() {
-  if (db) {
-    await db.destroy();
-    db = null;
-    logger.info('Database connection pool closed');
-  }
-}
+const getClient = () => pool.connect();
 
-module.exports = { getDb, checkConnection, closeDb };
+module.exports = { query, getClient, pool };

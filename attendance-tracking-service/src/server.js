@@ -1,71 +1,60 @@
 'use strict';
 
 const app = require('./app');
-const env = require('./config/env');
-const { checkConnection, closeDb } = require('./config/database');
-const logger = require('./utils/logger');
+const logger = require('./config/logger');
+const { pool } = require('./config/database');
 
-const PORT = env.app.port;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-async function startServer() {
+async function start() {
   // Verify database connectivity before accepting traffic
-  const dbConnected = await checkConnection();
-  if (!dbConnected && env.app.isProd) {
-    logger.error('Cannot connect to database. Exiting.');
+  try {
+    const client = await pool.connect();
+    await client.query('SELECT 1');
+    client.release();
+    logger.info('Database connection established');
+  } catch (err) {
+    logger.error('Failed to connect to the database', { error: err.message });
     process.exit(1);
-  }
-  if (!dbConnected) {
-    logger.warn('Database connection failed — starting in degraded mode (dev only)');
   }
 
   const server = app.listen(PORT, () => {
-    logger.info(`Server started`, {
+    logger.info(`Attendance Tracking Service started`, {
       port: PORT,
-      environment: env.app.env,
+      env: process.env.NODE_ENV || 'development',
       docs: `http://localhost:${PORT}/api-docs`,
-      health: `http://localhost:${PORT}/health`,
     });
   });
 
-  // ─── Graceful Shutdown ──────────────────────────────────────────────────────
+  // ─── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = async (signal) => {
-    logger.info(`${signal} received — shutting down gracefully`);
+    logger.info(`${signal} received – shutting down gracefully`);
 
     server.close(async () => {
       logger.info('HTTP server closed');
-      await closeDb();
-      logger.info('Database connections closed');
+      await pool.end();
+      logger.info('Database pool closed');
       process.exit(0);
     });
 
-    // Force exit if graceful shutdown takes too long
+    // Force exit after 10 s if graceful shutdown hangs
     setTimeout(() => {
       logger.error('Forced shutdown after timeout');
       process.exit(1);
-    }, 10000);
+    }, 10_000);
   };
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // Handle unhandled promise rejections
-  process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled Promise Rejection', { reason, promise });
-    if (env.app.isProd) {
-      shutdown('unhandledRejection');
-    }
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection', { reason: String(reason) });
   });
 
-  // Handle uncaught exceptions
   process.on('uncaughtException', (err) => {
-    logger.error('Uncaught Exception', { error: err.message, stack: err.stack });
-    shutdown('uncaughtException');
+    logger.error('Uncaught exception', { error: err.message, stack: err.stack });
+    process.exit(1);
   });
-
-  return server;
 }
 
-startServer().catch((err) => {
-  logger.error('Failed to start server', { error: err.message });
-  process.exit(1);
-});
+start();

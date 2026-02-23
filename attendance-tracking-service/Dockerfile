@@ -3,53 +3,53 @@ FROM node:20-alpine AS deps
 
 WORKDIR /app
 
-# Copy only package files to leverage Docker layer caching
+# Copy only package files first to leverage Docker layer cache
 COPY package*.json ./
 
-# Install only production dependencies
-RUN npm ci --only=production && npm cache clean --force
+RUN npm ci --only=production && \
+    # Prune npm cache to reduce image size
+    npm cache clean --force
 
-# ─── Stage 2: Build (for any future transpilation/bundling) ───────────────────
-FROM node:20-alpine AS build
+# ─── Stage 2: Development ─────────────────────────────────────────────────────
+FROM node:20-alpine AS development
 
 WORKDIR /app
 
 COPY package*.json ./
 RUN npm ci
 
-# Copy source
-COPY src/ ./src/
+COPY . .
 
-# ─── Stage 3: Production Image ────────────────────────────────────────────────
+EXPOSE 3000
+CMD ["npm", "run", "dev"]
+
+# ─── Stage 3: Production ──────────────────────────────────────────────────────
 FROM node:20-alpine AS production
 
-LABEL maintainer="your-team@example.com"
-LABEL org.opencontainers.image.title="Attendance Tracking Service"
-LABEL org.opencontainers.image.version="1.0.0"
-
-# Security: run as non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Create non-root user for security
+RUN addgroup -g 1001 -S nodejs && \
+    adduser  -S nodeuser -u 1001
 
 WORKDIR /app
 
-# Copy production node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# Copy production dependencies from deps stage
+COPY --from=deps --chown=nodeuser:nodejs /app/node_modules ./node_modules
 
-# Copy application source
-COPY --from=build /app/src ./src
-COPY package*.json ./
+# Copy source code
+COPY --chown=nodeuser:nodejs . .
 
-# Create log directory and set permissions
-RUN mkdir -p logs && chown -R appuser:appgroup /app
+# Create log directory
+RUN mkdir -p logs && chown nodeuser:nodejs logs
 
-USER appuser
-
-# Expose application port
-EXPOSE 3000
+# Switch to non-root user
+USER nodeuser
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1) })"
 
-# Start the server
+EXPOSE 3000
+
+ENV NODE_ENV=production
+
 CMD ["node", "src/server.js"]

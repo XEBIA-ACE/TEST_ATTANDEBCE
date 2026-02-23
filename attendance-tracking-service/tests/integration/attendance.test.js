@@ -2,186 +2,191 @@
 
 const request = require('supertest');
 const app = require('../../src/app');
-const { getDb, closeDb } = require('../../src/config/database');
-const { generateToken } = require('../../src/api/middlewares/auth');
+const attendanceRepository = require('../../src/repositories/attendance.repository');
+const employeeRepository = require('../../src/repositories/employee.repository');
 
-const authToken = generateToken({ id: 'test-user', role: 'admin' });
-const authHeader = `Bearer ${authToken}`;
+jest.mock('../../src/repositories/attendance.repository');
+jest.mock('../../src/repositories/employee.repository');
+jest.mock('../../src/config/logger', () => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+}));
 
-let db;
-let testEmployee;
+const jwt = require('jsonwebtoken');
+process.env.JWT_SECRET = 'test_secret_key_at_least_32_chars_long!!';
 
-beforeAll(async () => {
-  db = getDb();
-  await db.migrate.latest();
+const adminToken = jwt.sign(
+  { sub: 'user-1', email: 'admin@test.com', role: 'admin' },
+  process.env.JWT_SECRET,
+  { expiresIn: '1h' }
+);
+
+const TODAY = new Date().toISOString().split('T')[0];
+
+const makeDbEmployee = (overrides = {}) => ({
+  id: 'emp-uuid-1',
+  employee_code: 'EMP-001',
+  first_name: 'Jane',
+  last_name: 'Doe',
+  email: 'jane@example.com',
+  department: 'Engineering',
+  is_active: true,
+  isActive: true,
+  ...overrides,
+  toJSON() { return this; },
 });
 
-afterAll(async () => {
-  await db.migrate.rollback(undefined, true);
-  await closeDb();
-});
-
-beforeEach(async () => {
-  await db('attendance_records').del();
-  await db('employees').del();
-
-  // Create a test employee for attendance tests
-  const res = await request(app)
-    .post('/api/v1/employees')
-    .set('Authorization', authHeader)
-    .send({
-      employee_number: 'EMP001',
-      first_name: 'Test',
-      last_name: 'Employee',
-      email: 'test.employee@example.com',
-      department: 'Engineering',
-      position: 'Developer',
-      hire_date: '2023-01-01',
-    });
-
-  testEmployee = res.body.data;
+const makeDbRecord = (overrides = {}) => ({
+  id: 'att-uuid-1',
+  employee_id: 'emp-uuid-1',
+  employeeId: 'emp-uuid-1',
+  date: TODAY,
+  check_in_time: new Date().toISOString(),
+  checkInTime: new Date().toISOString(),
+  check_out_time: null,
+  checkOutTime: null,
+  status: 'present',
+  notes: null,
+  total_hours: null,
+  totalHours: null,
+  isCheckedOut: false,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  ...overrides,
+  toJSON() { return this; },
 });
 
 describe('Attendance API', () => {
-  describe('POST /api/v1/attendance/check-in', () => {
-    it('should record check-in for active employee', async () => {
-      const res = await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
+  afterEach(() => jest.clearAllMocks());
 
-      expect(res.status).toBe(201);
-      expect(res.body.success).toBe(true);
-      expect(res.body.data).toMatchObject({
-        employee_id: testEmployee.id,
-        status: 'present',
+  // ── GET /api/v1/attendance ────────────────────────────────────────────────
+  describe('GET /api/v1/attendance', () => {
+    it('returns 200 with paginated records', async () => {
+      attendanceRepository.findAll.mockResolvedValue({
+        records: [makeDbRecord()],
+        total: 1,
       });
-      expect(res.body.data.check_in).toBeDefined();
-      expect(res.body.data.check_out).toBeNull();
+
+      const res = await request(app)
+        .get('/api/v1/attendance')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.records).toHaveLength(1);
     });
 
-    it('should reject duplicate check-in on same day', async () => {
-      // First check-in
-      await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
+    it('returns 422 when date range is invalid', async () => {
+      const res = await request(app)
+        .get('/api/v1/attendance?start_date=2024-01-31&end_date=2024-01-01')
+        .set('Authorization', `Bearer ${adminToken}`);
 
-      // Second check-in attempt
+      expect(res.status).toBe(422);
+    });
+  });
+
+  // ── POST /api/v1/attendance/check-in ──────────────────────────────────────
+  describe('POST /api/v1/attendance/check-in', () => {
+    it('records a check-in and returns 201', async () => {
+      employeeRepository.findById.mockResolvedValue(makeDbEmployee());
+      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(null);
+      attendanceRepository.create.mockResolvedValue(makeDbRecord());
+
       const res = await request(app)
         .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ employee_id: 'emp-uuid-1' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.employeeId).toBe('emp-uuid-1');
+    });
+
+    it('returns 422 when employee_id is missing', async () => {
+      const res = await request(app)
+        .post('/api/v1/attendance/check-in')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({});
+
+      expect(res.status).toBe(422);
+    });
+
+    it('returns 409 when already checked in today', async () => {
+      employeeRepository.findById.mockResolvedValue(makeDbEmployee());
+      attendanceRepository.findByEmployeeAndDate.mockResolvedValue(makeDbRecord());
+
+      const res = await request(app)
+        .post('/api/v1/attendance/check-in')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ employee_id: 'emp-uuid-1' });
 
       expect(res.status).toBe(409);
     });
+  });
 
-    it('should return 404 for nonexistent employee', async () => {
+  // ── PATCH /api/v1/attendance/:id/check-out ────────────────────────────────
+  describe('PATCH /api/v1/attendance/:id/check-out', () => {
+    it('records a check-out and returns 200', async () => {
+      attendanceRepository.findById.mockResolvedValue(makeDbRecord());
+      attendanceRepository.update.mockResolvedValue(
+        makeDbRecord({ checkOutTime: new Date().toISOString(), isCheckedOut: true })
+      );
+
       const res = await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: '00000000-0000-0000-0000-000000000000' });
+        .patch('/api/v1/attendance/att-uuid-1/check-out')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({});
 
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
     });
 
-    it('should return 400 for missing employee_id', async () => {
+    it('returns 400 when already checked out', async () => {
+      attendanceRepository.findById.mockResolvedValue(
+        makeDbRecord({ checkOutTime: new Date().toISOString(), isCheckedOut: true })
+      );
+
       const res = await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
+        .patch('/api/v1/attendance/att-uuid-1/check-out')
+        .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
       expect(res.status).toBe(400);
     });
   });
 
-  describe('POST /api/v1/attendance/check-out', () => {
-    beforeEach(async () => {
-      // Check in first
-      await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
-    });
+  // ── GET /api/v1/attendance/report ─────────────────────────────────────────
+  describe('GET /api/v1/attendance/report', () => {
+    it('returns 200 with summary report', async () => {
+      attendanceRepository.getSummaryReport.mockResolvedValue([
+        {
+          employee_id: 'emp-uuid-1',
+          employee_code: 'EMP-001',
+          first_name: 'Jane',
+          last_name: 'Doe',
+          department: 'Engineering',
+          total_days: '5',
+          present_days: '4',
+          absent_days: '1',
+          late_days: '0',
+          half_days: '0',
+          total_hours: '32.00',
+          avg_hours_per_day: '8.00',
+        },
+      ]);
 
-    it('should record check-out and calculate total hours', async () => {
       const res = await request(app)
-        .post('/api/v1/attendance/check-out')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
+        .get('/api/v1/attendance/report?start_date=2024-01-01&end_date=2024-01-31')
+        .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.data.check_out).toBeDefined();
-      expect(res.body.data.total_hours).toBeGreaterThanOrEqual(0);
+      expect(res.body.data.results).toHaveLength(1);
     });
 
-    it('should reject check-out if already checked out', async () => {
-      // First check-out
-      await request(app)
-        .post('/api/v1/attendance/check-out')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
-
-      // Second check-out attempt
+    it('returns 422 when start_date is missing', async () => {
       const res = await request(app)
-        .post('/api/v1/attendance/check-out')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
+        .get('/api/v1/attendance/report?end_date=2024-01-31')
+        .set('Authorization', `Bearer ${adminToken}`);
 
-      expect(res.status).toBe(409);
-    });
-  });
-
-  describe('GET /api/v1/attendance', () => {
-    it('should list attendance records', async () => {
-      await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
-
-      const res = await request(app)
-        .get('/api/v1/attendance')
-        .set('Authorization', authHeader);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(1);
-      expect(res.body.pagination.total).toBe(1);
-    });
-
-    it('should filter by employee_id', async () => {
-      await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
-
-      const res = await request(app)
-        .get(`/api/v1/attendance?employee_id=${testEmployee.id}`)
-        .set('Authorization', authHeader);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data.every((r) => r.employee_id === testEmployee.id)).toBe(true);
-    });
-  });
-
-  describe('GET /api/v1/attendance/reports/employee/:id', () => {
-    it('should return employee attendance summary', async () => {
-      await request(app)
-        .post('/api/v1/attendance/check-in')
-        .set('Authorization', authHeader)
-        .send({ employee_id: testEmployee.id });
-
-      const res = await request(app)
-        .get(
-          `/api/v1/attendance/reports/employee/${testEmployee.id}?date_from=2024-01-01&date_to=2024-12-31`
-        )
-        .set('Authorization', authHeader);
-
-      expect(res.status).toBe(200);
-      expect(res.body.data).toMatchObject({
-        employee_id: testEmployee.id,
-        date_from: '2024-01-01',
-        date_to: '2024-12-31',
-      });
+      expect(res.status).toBe(422);
     });
   });
 });
