@@ -1,4 +1,4 @@
-require('dotenv').config();
+'use strict';
 
 const express = require('express');
 const helmet = require('helmet');
@@ -7,86 +7,104 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 
-const logger = require('./config/logger');
-const swaggerSpec = require('./config/swagger');
-const apiRoutes = require('./api/routes');
-const errorHandler = require('./api/middlewares/errorHandler');
-const requestLogger = require('./api/middlewares/requestLogger');
+const appConfig = require('./config/app.config');
+const swaggerSpec = require('./config/swagger.config');
+const requestLogger = require('./api/middlewares/requestLogger.middleware');
+const { notFound, globalErrorHandler } = require('./api/middlewares/error.middleware');
+
+// Routes
+const healthRoutes = require('./api/routes/health.routes');
+const employeeRoutes = require('./api/routes/employee.routes');
+const attendanceRoutes = require('./api/routes/attendance.routes');
 
 const app = express();
 
-// ── Security middleware ──────────────────────────────────────────────────────
-app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+// ── Trust proxy (needed for correct IP behind load balancers/nginx) ────────────
+app.set('trust proxy', 1);
 
-// ── Rate limiting ────────────────────────────────────────────────────────────
+// ── Security headers ───────────────────────────────────────────────────────────
+app.use(helmet());
+
+// ── CORS ───────────────────────────────────────────────────────────────────────
 app.use(
-  rateLimit({
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { success: false, message: 'Too many requests, please try again later.' },
+  cors({
+    origin: appConfig.cors.origin,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
-// ── General middleware ───────────────────────────────────────────────────────
-app.use(compression());
+// ── Body parsing & compression ─────────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(compression());
+
+// ── Request logging ────────────────────────────────────────────────────────────
 app.use(requestLogger);
 
-// ── Health & metrics endpoints ───────────────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'attendance-tracking-service',
-    version: process.env.npm_package_version || '1.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV,
-  });
+// ── Rate limiting ──────────────────────────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: appConfig.rateLimit.windowMs,
+  max: appConfig.rateLimit.max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests, please try again later.' },
 });
+app.use('/api/', limiter);
 
-app.get('/metrics', (req, res) => {
-  const mem = process.memoryUsage();
-  res.json({
-    uptime_seconds: Math.floor(process.uptime()),
-    memory: {
-      rss_mb: Math.round(mem.rss / 1024 / 1024),
-      heap_used_mb: Math.round(mem.heapUsed / 1024 / 1024),
-      heap_total_mb: Math.round(mem.heapTotal / 1024 / 1024),
-    },
-    node_version: process.version,
-  });
-});
+// ── API routes ─────────────────────────────────────────────────────────────────
+const API_PREFIX = '/api/v1';
 
-// ── Swagger UI ───────────────────────────────────────────────────────────────
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+app.use('/health', healthRoutes);
+app.use(`${API_PREFIX}/employees`, employeeRoutes);
+app.use(`${API_PREFIX}/attendance`, attendanceRoutes);
 
-// ── API routes ───────────────────────────────────────────────────────────────
-app.use('/api/v1', apiRoutes);
+// ── Swagger UI ─────────────────────────────────────────────────────────────────
+app.use(
+  '/api-docs',
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'Attendance Tracking API',
+    swaggerOptions: { persistAuthorization: true },
+  })
+);
 
-// ── 404 handler ──────────────────────────────────────────────────────────────
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route ${req.method} ${req.path} not found`,
-  });
-});
+// Expose raw OpenAPI spec as JSON (useful for code generation)
+app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
 
-// ── Global error handler (must be last) ─────────────────────────────────────
-app.use(errorHandler);
+// ── 404 & global error handler ─────────────────────────────────────────────────
+app.use(notFound);
+app.use(globalErrorHandler);
 
-// ── Server startup ───────────────────────────────────────────────────────────
+// ── Bootstrap ──────────────────────────────────────────────────────────────────
 if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    logger.info(`Attendance Tracking Service started`, {
-      port: PORT,
-      env: process.env.NODE_ENV,
-      docs: `http://localhost:${PORT}/api-docs`,
-    });
-  });
+  const { connectDatabase } = require('./data/database');
+  const { Employee, Attendance } = require('./data/models');
+  const logger = require('./utils/logger');
+
+  (async () => {
+    try {
+      await connectDatabase();
+
+      // Auto-sync schema in development; in production run migrations explicitly
+      if (appConfig.env !== 'production') {
+        await Employee.sync({ alter: true });
+        await Attendance.sync({ alter: true });
+        logger.info('Database schema synchronised (development mode)');
+      }
+
+      app.listen(appConfig.port, () => {
+        logger.info(
+          `🚀 ${appConfig.appName} running on port ${appConfig.port} [${appConfig.env}]`
+        );
+        logger.info(`   API docs: http://localhost:${appConfig.port}/api-docs`);
+        logger.info(`   Health:   http://localhost:${appConfig.port}/health`);
+      });
+    } catch (err) {
+      logger.error('Failed to start server:', err);
+      process.exit(1);
+    }
+  })();
 }
 
 module.exports = app;
